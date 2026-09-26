@@ -127,3 +127,28 @@ export interface EvalsView {
   mutants: MutantsReport | null;
   staleness: { stale: boolean; changed: string[] };
 }
+
+export interface SkillTool {
+  name: string;
+  description: string | null;
+  input_schema: { properties?: Record<string, { description?: string }> };
+}
+
+export interface Skill {
+  name: string;
+  title: string;
+  description: string;
+  component: string;
+  risk_tier: number;
+  required_agent_scope: string;
+  required_user_role: string;
+  examples: string[];
+  enabled: boolean;
+  access: { allowed: boolean; reason: string };
+  tools: SkillTool[];
+}
+
+export interface SkillCatalog {
+  server: string;
+  skills: Skill[];
+}

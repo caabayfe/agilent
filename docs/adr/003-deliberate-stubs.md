@@ -9,17 +9,17 @@ The brief asks for two deliberate stubs. Each is marked `STUB` in code, keeps a 
 
 **What it does:**
 - The mock IdP issues a user JWT for a chosen persona. There is no password: login is "pick a persona".
-- It implements an **RFC 8693-shaped token exchange**. The agent presents its client secret plus the user token and receives one delegated token **per skill audience**, with claims:
+- It implements an **RFC 8693-shaped token exchange**. The agent presents its client secret plus the user token and receives a delegated token for the **skill server audience**, with claims:
   - `sub` = user
   - `act.sub` = `customer-assistant`
-  - `aud` = `mcp-billing`, etc.
-  - `scope` = the intersection of what the agent is registered for and what that audience needs
+  - `aud` = `mcp-customer`
+  - `scope` = the intersection of what the agent is registered for and the skill scopes that audience understands (`orders.read billing.read service.read`)
   - `customer_id`, `roles`
 
 **What is real:**
 - The token shape.
-- Per-audience tokens, so there is no token passthrough and no confused deputy.
-- Signature and audience validation at every skill.
+- Audience-bound, down-scoped tokens, so there is no token passthrough and no confused deputy.
+- Signature and audience validation at the skill server, then each skill checks its own scope.
 - Agent scopes read from `identity.agents`, which is how `make revoke-agent-scope` works.
 
 **What is fake:**

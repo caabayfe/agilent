@@ -13,6 +13,11 @@ async def test_exchange_requires_agent_credentials(idp: IdpClient) -> None:
 
 
 async def test_exchange_rejects_non_user_tokens(idp: IdpClient) -> None:
-    delegated = (await idp.exchange_for_skills(await idp.login("alice")))["mcp-orders"]
+    delegated = await idp.exchange_for_skills(await idp.login("alice"))
     with pytest.raises(httpx.HTTPStatusError):
         await idp.exchange_for_skills(delegated)  # a delegated token cannot be re-exchanged
+
+
+async def test_exchange_rejects_unknown_audiences(idp: IdpClient) -> None:
+    with pytest.raises(httpx.HTTPStatusError):
+        await idp.exchange_for_skills(await idp.login("alice"), audience="mcp-orders")

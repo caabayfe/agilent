@@ -87,7 +87,7 @@ M4 is also the governance point: **a provider swap is a promotion event.** A mod
 
 ## Promotion decision (computed, not judged)
 
-- The **risk tier is derived**: the maximum `risk_tier` over the manifests of the skills the composition binds (orders 1, service 1, billing 2), so the tier is **2**.
+- The **risk tier is derived**: the maximum `risk_tier` over the manifests of the skills the composition binds (orders 1, service 1, billing 2), so the tier is **2**. The tier is per **skill**, not per server: sharing `mcp-customer` with billing does not make orders tier 2, and hosting billing next to tier-1 skills does not dilute it.
 - The tier selects the mandatory gates: tier 1 → G1–G3 (G4 advisory); tier 2 → G1–G4.
 - `decide()` (`evals/promotion.py`) is a pure, unit-tested function. It returns:
   - `certified`
@@ -119,5 +119,5 @@ What the live runs taught us, and what changed as a result:
 ## Adding a case
 
 1. Add an entry to `evals/cases.yaml` with `persona`, `question`, `risk`, `why_it_matters`, the `facts` it needs (see `evals/ground_truth.py` for fact kinds), `expected_tools` and `expected_alias`.
-2. For entitlement cases add `forbid_allow_on: mcp-<skill>` and restrict `allowed_tools`.
+2. For entitlement cases add `forbid_allow_on: mcp-customer/<skill>` and restrict `allowed_tools`.
 3. Run `make eval`. The dataset hash changes, so the previous certificate goes stale automatically.

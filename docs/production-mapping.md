@@ -6,9 +6,9 @@
 | BFF + agent runtime | FastAPI + LangGraph container | Container Apps / AKS; or Foundry Agent Service for hosted agents | ECS/EKS; or Bedrock AgentCore Runtime |
 | Conversation memory | `InMemorySaver` | LangGraph `PostgresSaver` on Azure Database for PostgreSQL | `PostgresSaver` on Aurora / RDS |
 | User identity | Mock IdP persona login (stub 1) | Entra ID, OIDC + PKCE via BFF | Cognito or enterprise IdP |
-| Agent identity + delegation | Mock RFC 8693 token exchange, per-audience tokens | **Entra Agent ID** + on-behalf-of | **AgentCore Identity** |
+| Agent identity + delegation | Mock RFC 8693 token exchange, audience-bound down-scoped tokens | **Entra Agent ID** + on-behalf-of | **AgentCore Identity** |
 | Policy decision | `policy.authorize()` in each skill (stub 2) | OPA / Cedar sidecar, policies in their own repo | Amazon Verified Permissions (Cedar) |
-| Skills (MCP servers) | FastMCP over streamable HTTP, one per data product | Container Apps behind **APIM MCP gateway** | ECS/Lambda behind **AgentCore Gateway** |
+| Skills (MCP) | One FastMCP server per bounded context (`mcp-customer`) with a skill per data product (ADR-004) | Container Apps behind **APIM MCP gateway** | ECS/Lambda behind **AgentCore Gateway** |
 | Model gateway | LiteLLM (`gateway/profiles`) | **APIM AI Gateway**: backend pools, circuit breaker, token limits, semantic cache, managed identity | **Bedrock** (Converse, cross-region inference, Guardrails); LiteLLM on EKS for non-Bedrock vendors |
 | Managed router (optional, behind alias) | – | Foundry Model Router | Bedrock Intelligent Prompt Routing |
 | Models | Scripted fake / gpt-4.1-mini + gpt-5.4 (Azure OpenAI) | Azure OpenAI / Foundry deployments | Bedrock models |

@@ -23,7 +23,7 @@ const view = (stale: boolean): EvalsView => ({
     decision: {
       decision: "blocked",
       risk_tier: 2,
-      tier_sources: { "mcp-billing": 2 },
+      tier_sources: { "mcp-customer/billing": 2 },
       mandatory: ["G1", "G2", "G3", "G4"],
       advisory: [],
       reasons: ["G4 Latency budget failed (mandatory at tier 2)"],

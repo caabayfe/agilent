@@ -71,7 +71,7 @@ export function TracePanel({ traceId, events, error }: Props) {
             <details className="group rounded-lg border border-slate-200 bg-white p-2.5 open:shadow-sm">
               <summary className="flex cursor-pointer list-none flex-wrap items-center gap-1.5 text-xs">
                 <span className="font-semibold text-slate-800">{ACTION_LABEL[event.action]}</span>
-                <Badge tone="slate">{event.component}</Badge>
+                <ComponentBadges component={event.component} />
                 {event.decision && event.action !== "route" && (
                   <Badge tone={decisionTone(event)}>{event.decision}</Badge>
                 )}
@@ -97,6 +97,17 @@ export function TracePanel({ traceId, events, error }: Props) {
         ))}
       </ol>
     </div>
+  );
+}
+
+/** ``mcp-customer/billing`` -> server badge + skill badge. */
+function ComponentBadges({ component }: { component: string }) {
+  const [server, skill] = component.split("/", 2);
+  return (
+    <>
+      <Badge tone="slate">{server}</Badge>
+      {skill && <Badge tone="indigo">skill: {skill}</Badge>}
+    </>
   );
 }
 

@@ -36,15 +36,30 @@ class SkillServerSettings(_Base):
     skill_port: int = 8000
     skill_allowed_hosts: str = ""
     allow_eval_mutants: bool = False
+    disabled_skills: str = ""  # kill switch, comma-separated skill names
+
+    @property
+    def disabled(self) -> frozenset[str]:
+        return frozenset(s.strip() for s in self.disabled_skills.split(",") if s.strip())
+
+
+class SkillDatabaseSettings(_Base):
+    """One DSN per skill: each skill logs in as its own least-privilege role."""
+
+    database_url_orders: SecretStr
+    database_url_billing: SecretStr
+    database_url_service: SecretStr
+
+    def for_skill(self, skill: str) -> str:
+        dsn: SecretStr = getattr(self, f"database_url_{skill}")
+        return dsn.get_secret_value()
 
 
 class AgentSettings(_Base):
     gateway_url: str = "http://litellm:4000/v1"
     gateway_api_key: SecretStr
     gateway_timeout_s: float = 90.0
-    orders_mcp_url: str = "http://mcp-orders:8000/mcp"
-    billing_mcp_url: str = "http://mcp-billing:8000/mcp"
-    service_mcp_url: str = "http://mcp-service:8000/mcp"
+    skill_server_url: str = "http://mcp-customer:8000/mcp"
 
 
 class GatewayInfoSettings(_Base):
@@ -65,6 +80,11 @@ def identity_settings() -> IdentitySettings:
 @lru_cache
 def skill_server_settings() -> SkillServerSettings:
     return SkillServerSettings()
+
+
+@lru_cache
+def skill_database_settings() -> SkillDatabaseSettings:
+    return SkillDatabaseSettings()
 
 
 @lru_cache

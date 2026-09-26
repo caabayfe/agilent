@@ -1,21 +1,27 @@
-"""Shared runtime for skill (MCP) servers.
+"""Shared runtime for the customer-data MCP server and its skills.
 
-Every skill is a separate process with its own database role, its own token
-audience and its own manifest. This module holds what they have in common:
+One server process (``mcp-customer``) hosts several skills. Each skill keeps its
+own manifest, its own database role and connection pool, its own agent scope and
+user role, and its own audit identity (``mcp-customer/<skill>``), so least
+privilege and lineage are per skill even though the deployment unit is shared.
 
-* ``DelegatedTokenVerifier`` - validates RS256 delegated tokens for one audience.
-* ``Boundary`` - the data-product boundary: entitlement check (user AND agent AND
-  tenant), audit of every decision, rate limiting and error hygiene.
-* ``create_app`` - the ASGI app with DNS-rebinding protection and a health probe.
+* ``DelegatedTokenVerifier`` - validates RS256 delegated tokens for the server audience.
+* ``Boundary`` - one per skill: entitlement check (user AND agent AND tenant),
+  kill switch, audit of every decision, rate limiting and error hygiene.
+* ``create_server`` / ``create_app`` - one FastMCP server with every skill
+  registered, a per-principal skill catalogue resource, DNS-rebinding protection
+  and a health probe.
 """
 
+import json
 import logging
 import re
 import time
 import uuid
 from collections import defaultdict, deque
-from collections.abc import AsyncIterator, Awaitable, Callable
-from contextlib import asynccontextmanager
+from collections.abc import AsyncIterator, Awaitable, Callable, Mapping, Sequence
+from contextlib import AsyncExitStack, asynccontextmanager
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -27,18 +33,19 @@ from mcp.server.auth.settings import AuthSettings
 from mcp.server.fastmcp import Context, FastMCP
 from mcp.server.fastmcp.exceptions import ToolError
 from mcp.server.transport_security import TransportSecuritySettings
-from pydantic import AnyHttpUrl, BaseModel, ValidationError
+from pydantic import AnyHttpUrl, BaseModel, Field, ValidationError
 from starlette.applications import Starlette
 from starlette.requests import Request
 from starlette.responses import JSONResponse
 from starlette.routing import Mount, Route
 
 from cfa.audit import Action, AuditEvent, AuditLog, content_hash
-from cfa.config import SkillServerSettings, database_settings, skill_server_settings
+from cfa.config import SkillServerSettings, skill_database_settings, skill_server_settings
 from cfa.db import Pool, open_pool
 from cfa.identity.tokens import DelegatedClaims, TokenValidator
 from cfa.logging import configure_logging
 from cfa.policy import AccessDecision, DataProduct, DenyReason, Principal, authorize
+from cfa.skills import SKILL_SERVER, skill_component
 
 log = logging.getLogger(__name__)
 
@@ -46,18 +53,25 @@ EVAL_MUTANT_HEADER = "x-eval-mutant"
 TRACE_HEADER = "x-trace-id"
 _TRACE_ID = re.compile(r"^[A-Za-z0-9-]{8,64}$")
 RATE_LIMIT_PER_MINUTE = 60
+CATALOG_URI = "skills://catalog"
+SKILL_DISABLED = "skill_disabled"
 
 
 class Manifest(BaseModel):
     """Declared by the skill owner; the harness derives risk tiers from it."""
 
     name: str
-    audience: str
+    title: str
     description: str
     risk_tier: int
     required_agent_scope: str
     required_user_role: str
     tools: list[str]
+    examples: list[str] = Field(default_factory=list)
+
+    @property
+    def component(self) -> str:
+        return skill_component(self.name)
 
     def product(self) -> DataProduct:
         return DataProduct(self.name, self.required_agent_scope, self.required_user_role, self.risk_tier)
@@ -107,14 +121,35 @@ class _RateLimiter:
 
 
 class Boundary:
-    """Enforces entitlements and writes an audit record for every decision."""
+    """One skill's data boundary: enforces entitlements and audits every decision."""
 
-    def __init__(self, manifest: Manifest, settings: SkillServerSettings) -> None:
+    def __init__(self, manifest: Manifest, settings: SkillServerSettings, rate_limiter: _RateLimiter) -> None:
         self.manifest = manifest
         self.product = manifest.product()
         self._settings = settings
         self._pool: Pool | None = None
-        self._rate_limiter = _RateLimiter(RATE_LIMIT_PER_MINUTE)
+        self._rate_limiter = rate_limiter
+
+    @property
+    def enabled(self) -> bool:
+        return self.manifest.name not in self._settings.disabled
+
+    def tool(self, mcp: FastMCP) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
+        """``@mcp.tool`` tagged with the owning skill, so clients can group the catalogue."""
+        return mcp.tool(meta={"skill": self.manifest.name, "risk_tier": self.manifest.risk_tier})
+
+    def describe(self, principal: Principal, tools: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
+        """Catalogue entry, including whether THIS principal may use the skill right now."""
+        decision = authorize(principal, self.product)
+        if decision.allowed and not self.enabled:
+            decision = AccessDecision(False, SKILL_DISABLED)
+        return {
+            **self.manifest.model_dump(exclude={"tools"}),
+            "component": self.manifest.component,
+            "enabled": self.enabled,
+            "access": {"allowed": decision.allowed, "reason": decision.reason},
+            "tools": [t for t in tools if t["name"] in self.manifest.tools],
+        }
 
     def bind(self, pool: Pool | None) -> None:
         self._pool = pool
@@ -149,7 +184,7 @@ class Boundary:
             await audit.record(
                 AuditEvent(
                     trace_id=trace_id,
-                    component=self.manifest.audience,
+                    component=self.manifest.component,
                     action=Action.ACCESS_DECISION,
                     name=tool,
                     actor_user=principal.user,
@@ -169,6 +204,11 @@ class Boundary:
 
         if not self._rate_limiter.allow(principal.user):
             raise ToolError("Rate limit exceeded, please retry later.")
+
+        if not self.enabled:
+            # Kill switch: the skill is switched off without redeploying the server.
+            await record(AccessDecision(False, SKILL_DISABLED))
+            raise ToolError(f"The {self.product.name} service is temporarily unavailable.")
 
         decision = authorize(principal, self.product)
         if not decision.allowed:
@@ -238,19 +278,28 @@ def _jsonable(value: Any) -> Any:
     return value
 
 
-def create_skill(manifest_path: Path, instructions: str) -> tuple[FastMCP, Boundary]:
+type Register = Callable[[FastMCP, Boundary], None]
+
+
+@dataclass(frozen=True, slots=True)
+class SkillModule:
+    manifest_path: Path
+    register: Register
+
+
+def create_server(modules: Sequence[SkillModule], instructions: str) -> tuple[FastMCP, dict[str, Boundary]]:
     settings = skill_server_settings()
-    manifest = load_manifest(manifest_path)
-    allowed_hosts = [h for h in settings.skill_allowed_hosts.split(",") if h] or [f"{manifest.audience}:*"]
+    allowed_hosts = [h for h in settings.skill_allowed_hosts.split(",") if h] or [f"{SKILL_SERVER}:*"]
     mcp = FastMCP(
-        name=manifest.audience,
+        name=SKILL_SERVER,
         instructions=instructions,
         token_verifier=DelegatedTokenVerifier(
-            TokenValidator(f"{settings.idp_url}/.well-known/jwks.json", settings.idp_issuer), manifest.audience
+            TokenValidator(f"{settings.idp_url}/.well-known/jwks.json", settings.idp_issuer), SKILL_SERVER
         ),
         auth=AuthSettings(
             issuer_url=AnyHttpUrl(settings.idp_issuer),
-            resource_server_url=AnyHttpUrl(f"http://{manifest.audience}:{settings.skill_port}"),
+            resource_server_url=AnyHttpUrl(f"http://{SKILL_SERVER}:{settings.skill_port}"),
+            validate_token_resource=False,  # DelegatedTokenVerifier already enforces aud == mcp-customer
         ),
         stateless_http=True,
         json_response=True,
@@ -258,21 +307,64 @@ def create_skill(manifest_path: Path, instructions: str) -> tuple[FastMCP, Bound
             enable_dns_rebinding_protection=True, allowed_hosts=allowed_hosts, allowed_origins=[]
         ),
     )
-    return mcp, Boundary(manifest, settings)
+    limiter = _RateLimiter(RATE_LIMIT_PER_MINUTE)  # per user, across all skills of this server
+    boundaries: dict[str, Boundary] = {}
+    for module in modules:
+        manifest = load_manifest(module.manifest_path)
+        boundary = Boundary(manifest, settings, limiter)
+        known = {t.name for t in mcp._tool_manager.list_tools()}
+        module.register(mcp, boundary)
+        added = {t.name for t in mcp._tool_manager.list_tools()} - known
+        if added != set(manifest.tools):
+            raise RuntimeError(f"skill {manifest.name} registered {sorted(added)}, manifest declares {manifest.tools}")
+        for name in added:
+            registered = mcp._tool_manager.get_tool(name)
+            if registered is not None:
+                registered.title = f"[{manifest.name}] {name}"
+        boundaries[manifest.name] = boundary
+
+    @mcp.resource(
+        CATALOG_URI,
+        name="skill-catalog",
+        title="Skill catalogue",
+        description="Skills on this server, their tools, risk tier, entitlements and the caller's access.",
+        mime_type="application/json",
+    )
+    async def catalog() -> str:
+        principal = _principal()
+        tools = [
+            {"name": t.name, "description": t.description, "input_schema": t.inputSchema}
+            for t in await mcp.list_tools()
+        ]
+        return json.dumps(
+            {"server": SKILL_SERVER, "skills": [b.describe(principal, tools) for b in boundaries.values()]}
+        )
+
+    return mcp, boundaries
 
 
-def create_app(mcp: FastMCP, boundary: Boundary) -> Starlette:
+def create_app(mcp: FastMCP, boundaries: Mapping[str, Boundary]) -> Starlette:
     @asynccontextmanager
     async def lifespan(_: Starlette) -> AsyncIterator[None]:
         configure_logging()
-        async with open_pool(database_settings().database_url.get_secret_value()) as pool:
-            boundary.bind(pool)
+        databases = skill_database_settings()
+        async with AsyncExitStack() as stack:
+            # One pool per skill, each logging in as that skill's least-privilege role.
+            for name, boundary in boundaries.items():
+                boundary.bind(await stack.enter_async_context(open_pool(databases.for_skill(name), max_size=3)))
             async with mcp.session_manager.run():
                 yield
-            boundary.bind(None)
+            for boundary in boundaries.values():
+                boundary.bind(None)
 
     async def healthz(_: Request) -> JSONResponse:
-        return JSONResponse({"status": "ok", "skill": boundary.manifest.name})
+        return JSONResponse(
+            {
+                "status": "ok",
+                "server": SKILL_SERVER,
+                "skills": {name: "enabled" if b.enabled else "disabled" for name, b in boundaries.items()},
+            }
+        )
 
     return Starlette(
         routes=[Route("/healthz", healthz), Mount("/", app=mcp.streamable_http_app())],

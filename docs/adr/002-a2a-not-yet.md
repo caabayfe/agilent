@@ -11,10 +11,10 @@ The Customer Facing Assistant needs three things: read orders, read billing, rea
 
 ## Decision
 
-The skills are **MCP servers, not agents**, and there is no A2A in this slice.
+The skills are **MCP skills (on one MCP server), not agents**, and there is no A2A in this slice.
 
 - **Nothing here reasons on its own behalf.** A skill that runs a SQL query does not need a task lifecycle, negotiation or its own model. Making it an agent would add a second LLM hop (latency, cost, a new failure mode) and a second place where prompt injection can land.
-- **Identity is harder across A2A, not easier.** In this slice the delegated token is `sub = user`, `act = agent`, `aud = one skill`, and every skill enforces the tenant rule. An A2A hop would add a second actor to the chain (`act.act`). It would also need a policy for what the downstream agent may do with the user's authority. That problem has no settled answer yet, and it is not needed to answer "where is my order?".
+- **Identity is harder across A2A, not easier.** In this slice the delegated token is `sub = user`, `act = agent`, `aud = the skill server`, and every skill enforces the tenant rule. An A2A hop would add a second actor to the chain (`act.act`). It would also need a policy for what the downstream agent may do with the user's authority. That problem has no settled answer yet, and it is not needed to answer "where is my order?".
 - **The eval surface stays closed.** Gates G1–G3 grade tool calls and access decisions recorded in one audit trace. With a remote agent in the loop, the thing being certified includes someone else's prompt and model.
 
 ## When A2A becomes warranted

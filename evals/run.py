@@ -237,7 +237,7 @@ def _case_report(result: CaseResult) -> dict[str, Any]:
 
 
 def _touched(results: list[CaseResult]) -> set[str]:
-    return {aud for r in results for run in r.runs for aud in run.touched}
+    return {skill for r in results for run in r.runs for skill in run.touched}
 
 
 async def baseline(settings: EvalSettings, repeats: int) -> dict[str, Any]:

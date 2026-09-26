@@ -38,7 +38,7 @@ describe("TracePanel", () => {
         events={[
           event({
             action: "access_decision",
-            component: "mcp-billing",
+            component: "mcp-customer/billing",
             name: "list_invoices",
             decision: "deny",
             reason: "user_role_missing",
@@ -48,7 +48,7 @@ describe("TracePanel", () => {
       />,
     );
     expect(screen.getByText("deny")).toBeInTheDocument();
-    expect(screen.getByText(/mcp-billing · list_invoices · user_role_missing/)).toBeInTheDocument();
+    expect(screen.getByText(/mcp-customer\/billing · list_invoices · user_role_missing/)).toBeInTheDocument();
   });
 
   it("shows which alias was requested and which model answered", () => {

@@ -2,18 +2,20 @@
 
 A small, working slice of an agent plane that runs on a laptop. A customer-facing assistant, built with **LangGraph**, answers questions about **orders, invoices, service history and troubleshooting**.
 
-- It reads three **MCP skills** over Postgres, **on the user's behalf**, with entitlements enforced at the data boundary.
+- It reads **one MCP server with three skills** (orders, billing, service) over Postgres, **on the user's behalf**, with entitlements enforced per skill at the data boundary.
 - It calls models only through **aliases** on a **model gateway**, so providers can be swapped and failed over with a config change.
 - Every action lands in an **audit/lineage** trail.
 - An **eval harness** computes whether the composition may be promoted, and proves its own gates are relevant.
 
 ```
 Browser ─► nginx (CSP) ─► BFF + LangGraph agent ─┬─► LiteLLM gateway ─► gpt-4.1-mini / gpt-5.4 (or offline fake models)
-                                                 ├─► mock IdP (token exchange: one delegated token per skill)
-                                                 └─► mcp-orders · mcp-billing · mcp-service ─► Postgres (+ audit, registry)
+                                                 ├─► mock IdP (token exchange: delegated token, aud=mcp-customer)
+                                                 └─► mcp-customer [skills: orders · billing · service] ─► Postgres (+ audit, registry)
 ```
 
 ![Chat with trace](docs/img/chat-trace.png)
+
+![Skills on the MCP server](docs/img/skills.png)
 
 ![Evals and promotion](docs/img/evals.png)
 
@@ -85,7 +87,8 @@ More in [docs/use-cases.md](docs/use-cases.md). The full readout is in [docs/dem
 | `make gateway PROFILE=fake\|live` | Activate a gateway profile |
 | `make swap-provider` / `unswap-provider` | Re-point `assistant-reasoning` to the other deployment (gateway config diff only) |
 | `make break-provider` / `fix-provider` | Break the primary reasoning deployment; the gateway fails over |
-| `make break-billing` / `fix-billing` | Take the billing skill down (graceful degradation) |
+| `make skills [PERSONA=bob]` | The MCP server's skill catalogue (tools, tier, scope, role) and that persona's access |
+| `make disable-skill SKILL=billing` / `enable-skill` | Per-skill kill switch; the server and other skills stay up (`break-billing` / `fix-billing` are aliases) |
 | `make revoke-agent-scope SCOPE=billing.read` / `restore-agent-scope SCOPE=…` | Denial caused by the **agent's** identity |
 | `make eval [ARGS=…]` | Baseline eval: canaries → gates → promotion decision → registry |
 | `make eval-mutants` | Mutation runs (mutant × gate matrix) |
@@ -104,6 +107,7 @@ More in [docs/use-cases.md](docs/use-cases.md). The full readout is in [docs/dem
   - [001 Model gateway & routing](docs/adr/001-model-gateway-and-routing.md)
   - [002 No A2A yet](docs/adr/002-a2a-not-yet.md)
   - [003 Deliberate stubs](docs/adr/003-deliberate-stubs.md)
+  - [004 One MCP server, many skills](docs/adr/004-one-mcp-server-many-skills.md)
 
 ## Brief requirements → where
 

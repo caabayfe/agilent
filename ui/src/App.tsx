@@ -4,12 +4,28 @@ import { api, ApiError } from "./api";
 import { Chat } from "./components/Chat";
 import { EvalsPanel } from "./components/EvalsPanel";
 import { Header } from "./components/Header";
+import { SkillsPanel } from "./components/SkillsPanel";
 import { TracePanel } from "./components/TracePanel";
 import { classes, newId } from "./format";
 import { SUGGESTIONS } from "./suggestions";
-import type { AuditEvent, ChatAnswer, EvalsView, GatewayInfo, Message, Persona, Session } from "./types";
+import type {
+  AuditEvent,
+  ChatAnswer,
+  EvalsView,
+  GatewayInfo,
+  Message,
+  Persona,
+  Session,
+  SkillCatalog,
+} from "./types";
 
-type Tab = "trace" | "evals";
+type Tab = "trace" | "skills" | "evals";
+
+const TAB_LABEL = new Map<Tab, string>([
+  ["trace", "Trace & audit"],
+  ["skills", "Skills"],
+  ["evals", "Evals & promotion"],
+]);
 
 export function App() {
   const [personas, setPersonas] = useState<Persona[]>([]);
@@ -24,6 +40,8 @@ export function App() {
   const [traceError, setTraceError] = useState<string | null>(null);
   const [gateway, setGateway] = useState<GatewayInfo | null>(null);
   const [evals, setEvals] = useState<EvalsView | null>(null);
+  const [skills, setSkills] = useState<SkillCatalog | null>(null);
+  const [skillsError, setSkillsError] = useState<string | null>(null);
   const [fatal, setFatal] = useState<string | null>(null);
 
   const refreshGateway = useCallback(() => {
@@ -39,6 +57,7 @@ export function App() {
 
   const signIn = useCallback(async (username: string) => {
     setSession(await api.login(username));
+    setSkills(null);
     setMessages([]);
     setThreadId(newId());
     setTraceId(null);
@@ -65,6 +84,19 @@ export function App() {
       window.clearInterval(timer);
     };
   }, [signIn, refreshGateway, refreshEvals]);
+
+  useEffect(() => {
+    if (tab !== "skills" || !session) return;
+    api.skills(session.token).then(
+      (catalog) => {
+        setSkills(catalog);
+        setSkillsError(null);
+      },
+      (e: unknown) => {
+        setSkillsError(e instanceof Error ? e.message : "Could not load skills");
+      },
+    );
+  }, [tab, session]);
 
   const selectTrace = useCallback(
     (id: string, token?: string) => {
@@ -155,7 +187,7 @@ export function App() {
           aria-label="Details"
         >
           <div className="flex border-b border-slate-200 bg-white px-3" role="tablist">
-            {(["trace", "evals"] as const).map((t) => (
+            {(["trace", "skills", "evals"] as const).map((t) => (
               <button
                 key={t}
                 type="button"
@@ -171,16 +203,24 @@ export function App() {
                     : "border-transparent text-slate-500 hover:text-slate-800",
                 )}
               >
-                {t === "trace" ? "Trace & audit" : "Evals & promotion"}
+                {TAB_LABEL.get(t)}
               </button>
             ))}
           </div>
           <div className="min-h-0 flex-1 overflow-y-auto p-4" role="tabpanel">
-            {tab === "trace" ? (
-              <TracePanel traceId={traceId} events={trace} error={traceError} />
-            ) : (
-              <EvalsPanel view={evals} onRefresh={refreshEvals} />
+            {tab === "trace" && <TracePanel traceId={traceId} events={trace} error={traceError} />}
+            {tab === "skills" && (
+              <SkillsPanel
+                catalog={skills}
+                error={skillsError}
+                persona={session?.user.name}
+                busy={busy}
+                onAsk={(q) => {
+                  void send(q);
+                }}
+              />
             )}
+            {tab === "evals" && <EvalsPanel view={evals} onRefresh={refreshEvals} />}
           </div>
         </aside>
       </main>

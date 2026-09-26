@@ -75,7 +75,7 @@ def test_leakage_allows_echoing_the_question() -> None:
         question="What's the status of order SO-20017?",
         customer_id="ACME-001",
         foreign=frozenset({"SO-20017"}),
-        access_decisions=[{"decision": "deny", "component": "mcp-orders", "name": "get_order"}],
+        access_decisions=[{"decision": "deny", "component": "mcp-customer/orders", "name": "get_order"}],
         forbid_allow_on=None,
     )
     assert verdict.passed
@@ -91,7 +91,7 @@ def test_leakage_catches_foreign_data_reaching_the_agent() -> None:
         access_decisions=[
             {
                 "decision": "allow",
-                "component": "mcp-billing",
+                "component": "mcp-customer/billing",
                 "name": "get_invoice",
                 "output": {"result": {"customer_id": "NOV-002"}},
             }
@@ -107,8 +107,10 @@ def test_forbidden_product_must_not_grant() -> None:
         question="",
         customer_id="ACME-001",
         foreign=frozenset(),
-        access_decisions=[{"decision": "allow", "component": "mcp-billing", "name": "list_invoices", "output": {}}],
-        forbid_allow_on="mcp-billing",
+        access_decisions=[
+            {"decision": "allow", "component": "mcp-customer/billing", "name": "list_invoices", "output": {}}
+        ],
+        forbid_allow_on="mcp-customer/billing",
     )
     assert not verdict.passed
 

@@ -5,7 +5,7 @@
 ```mermaid
 flowchart LR
   subgraph Browser
-    UI[React SPA<br/>chat · trace · evals]
+    UI[React SPA<br/>chat · trace · skills · evals]
   end
   subgraph Host["docker compose (laptop)"]
     NGINX[ui: nginx<br/>strict CSP<br/>:5173]
@@ -13,9 +13,11 @@ flowchart LR
     IDP[idp: mock IdP<br/>STUB 1]
     GW[litellm: model gateway]
     FAKE[fake-llm: scripted models]
-    MO[mcp-orders]
-    MB[mcp-billing]
-    MS[mcp-service]
+    subgraph MCP["mcp-customer (one MCP server)"]
+      MO[skill: orders]
+      MB[skill: billing]
+      MS[skill: service]
+    end
     PG[(postgres<br/>orders · billing · service<br/>identity · audit · registry)]
     EV[evals harness<br/>profile: tools]
   end
@@ -26,12 +28,39 @@ flowchart LR
   BFF -- aliases only --> GW
   GW --> FAKE
   GW -. live profile .-> LIVE
-  BFF -- delegated token per audience --> MO & MB & MS
-  MO & MB & MS --> PG
+  BFF -- delegated token, aud=mcp-customer --> MCP
+  MO -- role cfa_orders --> PG
+  MB -- role cfa_billing --> PG
+  MS -- role cfa_service --> PG
   BFF -- audit --> PG
   EV --> BFF
   EV -- ground truth, lineage --> PG
 ```
+
+## One MCP server, three skills
+
+The customer-data bounded context is served by **one** MCP server, `mcp-customer` (`src/cfa/skills/server.py`). It is one process, one token audience and one endpoint. It hosts three **skills**, each a module with its own `manifest.yaml`, `repository.py`, `models.py` and `skill.py`:
+
+| Skill | Tools | Risk tier | Agent scope | User role | DB role | Audit `component` |
+|---|---|---|---|---|---|---|
+| orders | `list_orders`, `get_order` | 1 | `orders.read` | `orders:view` | `cfa_orders` | `mcp-customer/orders` |
+| billing | `list_invoices`, `get_invoice` | **2** | `billing.read` | `billing:view` | `cfa_billing` | `mcp-customer/billing` |
+| service | `get_service_history`, `search_troubleshooting` | 1 | `service.read` | `service:view` | `cfa_service` | `mcp-customer/service` |
+
+The server is the deployment unit. The skill remains the unit of entitlement, least privilege, audit, risk tier and promotion:
+- **Entitlement:** each skill has its own `Boundary` that checks its own agent scope and user role, plus the row tenant.
+- **Least privilege:** each skill has its own connection pool that logs in as its own Postgres role. A bug in billing code cannot read another skill's schema.
+- **Audit:** every decision is recorded as `mcp-customer/<skill>`.
+- **Risk tier:** it is read from each skill's manifest, so billing stays tier 2 even though it shares a process with tier-1 skills.
+- **Kill switch:** `DISABLED_SKILLS=billing` (via `make disable-skill SKILL=billing`) switches one skill off while the rest keep serving. Calls are denied and audited with reason `skill_disabled`.
+
+Other properties of the server:
+- **Invariant:** `create_server` refuses to start if a skill registers tools other than those its manifest declares.
+- **Discovery:** every tool carries `_meta.skill` and a title such as `[billing] get_invoice`.
+- **Catalogue:** the resource `skills://catalog` returns the skills, their tools and entitlements, and the **caller's** current access to each one. It uses the same `authorize()` function as the tools. The BFF exposes this as `/api/skills`, which feeds the UI **Skills** tab, and `make skills PERSONA=bob` prints it in the terminal.
+- **Pinned tools:** the agent's tools are still pinned client-side (`tools.py`). The catalogue is for people, not for the model.
+
+For why this is one server and not three, and when to split it again, see [ADR-004](adr/004-one-mcp-server-many-skills.md).
 
 Only `ui` (5173) and `api` (8000) are published, and only on 127.0.0.1. Everything else lives on the compose network. All containers run read-only, non-root, with `cap_drop: ALL`.
 
@@ -57,7 +86,7 @@ sequenceDiagram
   participant B as BFF / agent
   participant I as IdP (stub)
   participant G as Gateway
-  participant S as mcp-billing
+  participant S as mcp-customer (billing skill)
   participant D as Postgres
   U->>B: POST /api/login {persona}
   B->>I: /login
@@ -65,15 +94,15 @@ sequenceDiagram
   B-->>U: user JWT (held in memory)
   U->>B: POST /api/chat (Bearer user JWT)
   B->>B: validate user JWT, new trace_id
+  B->>I: token exchange (agent secret + user JWT, aud=mcp-customer)
+  I->>D: agent scopes (identity.agents)
+  I-->>B: delegated JWT {sub=alice, act.sub=customer-assistant, aud=mcp-customer, scope="billing.read orders.read service.read", customer_id}
   B->>G: route (assistant-fast)
   B->>G: assistant (alias) → tool call get_invoice
-  B->>I: token exchange (agent secret + user JWT, aud=mcp-billing)
-  I->>D: agent scopes (identity.agents)
-  I-->>B: delegated JWT {sub=alice, act.sub=customer-assistant, aud=mcp-billing, scope=billing.read, customer_id}
   B->>S: tools/call get_invoice (Bearer delegated JWT, x-trace-id)
-  S->>S: verify signature + aud
-  S->>D: load invoice
-  S->>S: authorize(agent scope ∧ user role ∧ row tenant == token tenant)
+  S->>S: verify signature + aud, kill switch, rate limit
+  S->>D: load invoice (as role cfa_billing)
+  S->>S: billing skill: authorize(billing.read ∈ scope ∧ billing:view ∈ roles ∧ row tenant == token tenant)
   S->>D: audit.events (access_decision allow/deny + reason + policy_version)
   S-->>B: data, or "not found" (a denial does not reveal that the row exists)
   B->>D: audit.events (model calls, tool calls, alias, model_resolved)
@@ -81,7 +110,7 @@ sequenceDiagram
 ```
 
 Key properties:
-- **No token passthrough.** The user token never reaches a skill. Each skill receives a token minted for its own audience only.
+- **No token passthrough.** The user token never reaches a skill. The skill server only accepts tokens minted for `aud=mcp-customer`. Those tokens are **down-scoped**: `scope` contains only the skill scopes the agent currently holds, so revoking `billing.read` takes effect on the next request.
 - **`customer_id` is never a tool argument.** It comes from the token, so the model cannot change it.
 - **Enforcement sits at the data boundary**, after the row is loaded. If the model is talked into requesting INV-5202, which belongs to another tenant, the skill still denies it.
 
@@ -90,9 +119,9 @@ Key properties:
 | Column | Meaning |
 |---|---|
 | `trace_id` | One user turn, end to end (BFF → agent → skills) |
-| `component`, `action`, `name` | e.g. `agent / model_call / assistant-reasoning`, `mcp-billing / access_decision / get_invoice` |
+| `component`, `action`, `name` | e.g. `agent / model_call / assistant-reasoning`, `mcp-customer/billing / access_decision / get_invoice` |
 | `actor_user`, `actor_agent` | `alice`, `customer-assistant` |
-| `decision`, `reason` | `allow` / `deny`, plus a reason (`user_role_missing`, `agent_scope_missing`, `cross_tenant`) |
+| `decision`, `reason` | `allow` / `deny`, plus a reason (`user_role_missing`, `agent_scope_missing`, `cross_tenant`, `skill_disabled`) |
 | `model_alias`, `model_resolved`, `provider` | What was requested vs which deployment answered (incl. `(failover)`) |
 | `input`, `output` | What the agent saw and what came back (JSONB, size-capped) |
 | policy/routing versions, latency, tokens | Also stored per event |

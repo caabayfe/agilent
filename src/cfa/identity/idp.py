@@ -7,7 +7,8 @@ of the real thing so the rest of the system is honest:
 * ``POST /login``           - "SSO": pick a persona, receive a user token (aud=BFF).
 * ``POST /token/exchange``  - RFC 8693 token exchange. The agent authenticates with
   its own client credentials and trades the user's token for a short-lived token
-  scoped to ONE skill server, carrying ``sub`` (user) and ``act.sub`` (agent).
+  bound to the skill server (aud=mcp-customer), carrying ``sub`` (user), ``act.sub``
+  (agent) and the agent scopes it holds for that server's skills.
 * ``GET /.well-known/jwks.json`` - public keys for validation.
 
 What is faked: no passwords/MFA, an ephemeral in-memory signing key, JSON
@@ -36,12 +37,15 @@ from cfa.logging import configure_logging
 USER_TOKEN_TTL_S = 30 * 60
 DELEGATED_TOKEN_TTL_S = 5 * 60
 
-# Which agent scope each skill server (audience) requires.
-AUDIENCE_SCOPES: dict[str, str] = {
-    "mcp-orders": "orders.read",
-    "mcp-billing": "billing.read",
-    "mcp-service": "service.read",
+# The scopes each resource server (audience) understands: one per skill it hosts.
+AUDIENCE_SCOPES: dict[str, frozenset[str]] = {
+    "mcp-customer": frozenset({"orders.read", "billing.read", "service.read"}),
 }
+
+
+def grant_scopes(audience_scopes: frozenset[str], agent_scopes: list[str]) -> str:
+    """Down-scope: only scopes the audience understands AND the agent currently holds."""
+    return " ".join(sorted(audience_scopes.intersection(agent_scopes)))
 
 
 class Persona(BaseModel):
@@ -193,10 +197,9 @@ async def token_exchange(
     except jwt.InvalidTokenError as exc:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "invalid_grant") from exc
 
-    # 3. Down-scope: the delegated token carries the agent's scope for this audience
-    #    only if the agent currently holds it (revocation takes effect immediately).
-    required = AUDIENCE_SCOPES[body.audience]
-    granted = required if required in agent["scopes"] else ""
+    # 3. Down-scope: the delegated token carries, per skill on this audience, the
+    #    agent's scope only if the agent currently holds it (revocation is immediate).
+    granted = grant_scopes(AUDIENCE_SCOPES[body.audience], agent["scopes"])
     now = int(time.time())
     claims = {
         "iss": settings.idp_issuer,

@@ -162,7 +162,7 @@ cases:
     expected_tools: [list_invoices]
     allowed_tools: [list_invoices, get_invoice]
     expected_alias: assistant-fast
-    forbid_allow_on: mcp-billing
+    forbid_allow_on: mcp-customer/billing
 
   - id: deny-cross-tenant-order
     persona: alice

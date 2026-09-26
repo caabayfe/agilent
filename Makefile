@@ -7,7 +7,7 @@ PROFILE ?= fake
 SCOPE ?= billing.read
 
 .PHONY: help init up down reset logs ps gateway swap-provider unswap-provider break-provider fix-provider \
-        break-billing fix-billing revoke-agent-scope restore-agent-scope eval eval-mutants check test ui-check
+        skills disable-skill enable-skill break-billing fix-billing revoke-agent-scope restore-agent-scope eval eval-mutants check test ui-check
 
 help: ## Show targets
 	@grep -E '^[a-zA-Z_-]+:.*?## ' $(MAKEFILE_LIST) | awk 'BEGIN{FS=":.*?## "}{printf "  \033[36m%-22s\033[0m %s\n", $$1, $$2}'
@@ -49,11 +49,22 @@ break-provider: ## Revoke the primary reasoning deployment's key; the gateway fa
 
 fix-provider: unswap-provider ## Restore the provider
 
-break-billing: ## Take the billing skill down (graceful degradation demo)
-	$(COMPOSE) stop mcp-billing
+skills: ## Show the skills on the MCP server as a persona sees them: make skills [PERSONA=bob]
+	@$(COMPOSE) exec -T api python -m cfa.skills.show $(or $(PERSONA),alice)
 
-fix-billing: ## Bring the billing skill back
-	$(COMPOSE) start mcp-billing
+disable-skill: ## Kill switch for one skill, server stays up: make disable-skill SKILL=billing
+	@test -n "$(SKILL)" || (echo "usage: make disable-skill SKILL=billing" && exit 1)
+	@DISABLED_SKILLS=$(SKILL) $(COMPOSE) up -d --wait --no-deps --force-recreate mcp-customer
+	@$(COMPOSE) exec -T mcp-customer python -c "import urllib.request; print(urllib.request.urlopen('http://127.0.0.1:8000/healthz').read().decode())"
+
+enable-skill: ## Re-enable every skill
+	@DISABLED_SKILLS= $(COMPOSE) up -d --wait --no-deps --force-recreate mcp-customer
+	@$(COMPOSE) exec -T mcp-customer python -c "import urllib.request; print(urllib.request.urlopen('http://127.0.0.1:8000/healthz').read().decode())"
+
+break-billing: ## Alias: switch the billing skill off (graceful degradation demo)
+	@$(MAKE) --no-print-directory disable-skill SKILL=billing
+
+fix-billing: enable-skill ## Alias: switch it back on
 
 revoke-agent-scope: ## Revoke a scope from the agent identity: make revoke-agent-scope SCOPE=billing.read
 	@$(PSQL) -c "UPDATE identity.agents SET scopes = array_remove(scopes, '$(SCOPE)') WHERE agent_id = 'customer-assistant';" >/dev/null
@@ -81,7 +92,7 @@ test: ## Python tests incl. integration tests against the running stack
 	docker build -q --target dev -t cfa-dev:local . >/dev/null
 	docker run --rm --network cfa_default --env-file .env \
 	  -e EVAL_DATABASE_URL="postgresql://cfa_eval:$$(grep ^DB_PASSWORD_EVAL= .env | cut -d= -f2)@postgres:5432/cfa" \
-	  -e IDP_URL=http://idp:8000 -e ORDERS_MCP_URL=http://mcp-orders:8000/mcp \
+	  -e IDP_URL=http://idp:8000 \
 	  cfa-dev:local pytest -q
 
 ui-check: ## UI: typecheck, lint, format, tests, audit

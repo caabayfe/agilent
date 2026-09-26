@@ -45,28 +45,17 @@ services:
       AGENT_CLIENT_SECRET: ${AGENT_CLIENT_SECRET:?run make init}
     depends_on: {postgres: {condition: service_healthy}}
 
-  mcp-orders:
+  # ONE MCP server for the customer-data bounded context, hosting three skills.
+  # Each skill still logs in to Postgres as its own least-privilege role.
+  mcp-customer:
     <<: *app
-    command: ["uvicorn", "cfa.skills.orders.server:app", "--host", "0.0.0.0", "--port", "8000"]
+    command: ["uvicorn", "cfa.skills.server:app", "--host", "0.0.0.0", "--port", "8000"]
     environment:
       <<: *skill-env
-      DATABASE_URL: postgresql://cfa_orders:${DB_PASSWORD_ORDERS}@postgres:5432/cfa
-    depends_on: {postgres: {condition: service_healthy}, idp: {condition: service_healthy}}
-
-  mcp-billing:
-    <<: *app
-    command: ["uvicorn", "cfa.skills.billing.server:app", "--host", "0.0.0.0", "--port", "8000"]
-    environment:
-      <<: *skill-env
-      DATABASE_URL: postgresql://cfa_billing:${DB_PASSWORD_BILLING}@postgres:5432/cfa
-    depends_on: {postgres: {condition: service_healthy}, idp: {condition: service_healthy}}
-
-  mcp-service:
-    <<: *app
-    command: ["uvicorn", "cfa.skills.service.server:app", "--host", "0.0.0.0", "--port", "8000"]
-    environment:
-      <<: *skill-env
-      DATABASE_URL: postgresql://cfa_service:${DB_PASSWORD_SERVICE}@postgres:5432/cfa
+      DATABASE_URL_ORDERS: postgresql://cfa_orders:${DB_PASSWORD_ORDERS}@postgres:5432/cfa
+      DATABASE_URL_BILLING: postgresql://cfa_billing:${DB_PASSWORD_BILLING}@postgres:5432/cfa
+      DATABASE_URL_SERVICE: postgresql://cfa_service:${DB_PASSWORD_SERVICE}@postgres:5432/cfa
+      DISABLED_SKILLS: ${DISABLED_SKILLS:-}  # kill switch: make disable-skill SKILL=billing
     depends_on: {postgres: {condition: service_healthy}, idp: {condition: service_healthy}}
 
   fake-llm:
@@ -111,9 +100,7 @@ services:
     ports: ["127.0.0.1:8000:8000"]
     depends_on:
       idp: {condition: service_healthy}
-      mcp-orders: {condition: service_healthy}
-      mcp-billing: {condition: service_healthy}
-      mcp-service: {condition: service_healthy}
+      mcp-customer: {condition: service_healthy}
       litellm: {condition: service_healthy}
 
   # On-demand eval harness: `make eval`. Its own DB role (cfa_eval) reads ground truth.

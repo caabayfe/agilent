@@ -20,7 +20,7 @@ class RunRecord:
     latency_ms: int
     verdicts: dict[str, dict[str, Any]]  # gate id -> Verdict.to_dict()
     evidence: str = ""
-    touched: list[str] = field(default_factory=list)  # skill audiences reached
+    touched: list[str] = field(default_factory=list)  # skill components reached, e.g. mcp-customer/billing
 
 
 @dataclass(slots=True)

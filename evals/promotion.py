@@ -20,6 +20,7 @@ import yaml
 import cfa
 from cfa.agent.graph import PROMPTS_DIR
 from cfa.agent.routing import DEFAULT_ROUTING, ROUTING_POLICY_VERSION
+from cfa.skills import skill_component
 from evals.gates import GateResult
 
 EVALS_DIR = Path(__file__).parent
@@ -47,18 +48,22 @@ def load_policy(path: Path = EVALS_DIR / "promotion_policy.yaml") -> dict[str, A
 
 
 def skill_manifests() -> dict[str, dict[str, Any]]:
-    """audience -> manifest, for every skill in the repository."""
+    """Skill component (e.g. ``mcp-customer/billing``) -> manifest, for every skill.
+
+    Keyed by skill, not by server: several skills share one MCP server, but each
+    declares its own risk tier.
+    """
     manifests = {}
     for path in sorted(SKILLS_DIR.glob("*/manifest.yaml")):
         manifest: dict[str, Any] = yaml.safe_load(path.read_text())
-        manifests[manifest["audience"]] = manifest
+        manifests[skill_component(manifest["name"])] = manifest
     return manifests
 
 
 def derive_tier(
-    touched_audiences: Iterable[str], manifests: Mapping[str, Mapping[str, Any]]
+    touched_skills: Iterable[str], manifests: Mapping[str, Mapping[str, Any]]
 ) -> tuple[int, dict[str, int]]:
-    sources = {aud: int(manifests[aud]["risk_tier"]) for aud in sorted(set(touched_audiences)) if aud in manifests}
+    sources = {s: int(manifests[s]["risk_tier"]) for s in sorted(set(touched_skills)) if s in manifests}
     return (max(sources.values()) if sources else 1), sources
 
 

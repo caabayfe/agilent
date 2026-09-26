@@ -8,6 +8,7 @@ the audit trail, the gateway configuration and the latest eval results.
 import json
 import logging
 import re
+import uuid
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from dataclasses import asdict
@@ -25,6 +26,7 @@ from langgraph.checkpoint.memory import InMemorySaver
 from pydantic import BaseModel, Field
 
 from cfa.agent.service import AssistantService, build_service
+from cfa.agent.skills_client import SkillClient
 from cfa.audit import AuditLog
 from cfa.config import agent_settings, database_settings, gateway_info_settings, identity_settings
 from cfa.db import open_pool
@@ -61,6 +63,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         app.state.idp = IdpClient(
             identity.idp_url, identity.agent_client_id, identity.agent_client_secret.get_secret_value()
         )
+        app.state.skills = SkillClient(agent_settings().skill_server_url)
         app.state.validator = TokenValidator(f"{identity.idp_url}/.well-known/jwks.json", identity.idp_issuer)
         yield
 
@@ -148,6 +151,28 @@ def _is_invalid_grant(response: httpx.Response) -> bool:
         return bool(response.json().get("detail") == "invalid_grant")
     except ValueError:
         return False
+
+
+@app.get("/api/skills")
+async def skills(request: Request, user: User) -> dict[str, Any]:
+    """The skill server's catalogue as the agent would see it on this user's behalf:
+    skills, tools, risk tiers, entitlements, kill-switch state and current access."""
+    token, _ = user
+    idp: IdpClient = request.app.state.idp
+    try:
+        delegated = await idp.exchange_for_skills(token)
+    except httpx.HTTPStatusError as exc:
+        if _is_invalid_grant(exc.response):
+            raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Session expired, please sign in again.") from exc
+        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, "Identity provider unavailable.") from exc
+    except httpx.HTTPError as exc:
+        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, "Identity provider unavailable.") from exc
+    client: SkillClient = request.app.state.skills
+    try:
+        return await client.catalog(delegated, uuid.uuid4().hex)
+    except (httpx.HTTPError, OSError, ExceptionGroup) as exc:
+        log.warning("skill catalogue unavailable: %s", type(exc).__name__)
+        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, "Skill server unavailable.") from exc
 
 
 @app.get("/api/audit/{trace_id}")

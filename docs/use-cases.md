@@ -1,6 +1,6 @@
 # Use cases
 
-The **Customer Facing Assistant** answers a signed-in customer's questions about their **orders**, **invoices**, **instrument service history**, and **troubleshooting**. It does this by reading three data products (skills) through MCP, always on the user's behalf and within the user's entitlements.
+The **Customer Facing Assistant** answers a signed-in customer's questions about their **orders**, **invoices**, **instrument service history**, and **troubleshooting**. It does this by reading three data products (**skills**) on **one MCP server** (`mcp-customer`), always on the user's behalf and within the user's entitlements.
 
 ## Personas
 
@@ -14,11 +14,18 @@ In the UI, "login" means picking a persona; this stands in for SSO (ADR-003).
 
 ## Skills
 
-| Skill (MCP server) | Tools | Risk tier | Agent scope | User role |
+All three skills are served by `mcp-customer`. Each skill has its own entitlement, DB role, risk tier and audit identity (`mcp-customer/<skill>`).
+
+| Skill | Tools | Risk tier | Agent scope | User role |
 |---|---|---|---|---|
-| `mcp-orders` | `list_orders`, `get_order` | 1 | `orders.read` | `orders:view` |
-| `mcp-billing` | `list_invoices`, `get_invoice` | **2** (financial) | `billing.read` | `billing:view` |
-| `mcp-service` | `get_service_history`, `search_troubleshooting` | 1 | `service.read` | `service:view` |
+| `orders` | `list_orders`, `get_order` | 1 | `orders.read` | `orders:view` |
+| `billing` | `list_invoices`, `get_invoice` | **2** (financial) | `billing.read` | `billing:view` |
+| `service` | `get_service_history`, `search_troubleshooting` | 1 | `service.read` | `service:view` |
+
+**Showing the skills:**
+- **UI:** open the **Skills** tab. It shows one card per skill: tools with their arguments, tier, scope, role, and whether the *current persona* may use the skill right now (and if not, why). Click an **Ask:** chip to send that skill's example question.
+- **Terminal:** run `make skills PERSONA=bob`.
+- **Kill switch:** run `make disable-skill SKILL=billing`. The card flips to `denied · switched off`, and orders and service keep working.
 
 Orders and invoices belong to the **company account**, not to individual users. Alice and Bob share Acme's account, so "Bob's invoices" are Acme's invoices; Bob just lacks the role to see them.
 

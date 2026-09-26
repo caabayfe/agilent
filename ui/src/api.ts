@@ -1,4 +1,13 @@
-import type { AuditEvent, ChatAnswer, EvalsView, GatewayInfo, Persona, Session, User } from "./types";
+import type {
+  AuditEvent,
+  ChatAnswer,
+  EvalsView,
+  GatewayInfo,
+  Persona,
+  Session,
+  SkillCatalog,
+  User,
+} from "./types";
 
 export class ApiError extends Error {
   constructor(
@@ -45,6 +54,7 @@ export const api = {
     ),
   audit: (token: string, traceId: string) =>
     request<AuditEvent[]>(`/api/audit/${encodeURIComponent(traceId)}`, {}, token),
+  skills: (token: string) => request<SkillCatalog>("/api/skills", {}, token),
   gateway: () => request<GatewayInfo>("/api/gateway"),
   evals: () => request<EvalsView>("/api/evals/latest"),
 };

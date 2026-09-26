@@ -1,7 +1,10 @@
 name: orders
-audience: mcp-orders
+title: Orders & shipments
 description: Order history, order lines, shipment status and tracking for the signed-in customer.
 risk_tier: 1          # customer-owned operational data
 required_agent_scope: orders.read
 required_user_role: orders:view
 tools: [list_orders, get_order]
+examples:
+  - Where is my order SO-10231?
+  - Which of my orders are still open?

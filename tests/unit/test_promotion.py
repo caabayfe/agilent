@@ -44,10 +44,10 @@ def test_failed_canaries_invalidate_everything() -> None:
 
 def test_tier_is_derived_from_manifests() -> None:
     manifests: dict[str, Any] = skill_manifests()
-    assert derive_tier({"mcp-orders", "mcp-service"}, manifests)[0] == 1
-    tier, sources = derive_tier({"mcp-orders", "mcp-billing"}, manifests)
+    assert derive_tier({"mcp-customer/orders", "mcp-customer/service"}, manifests)[0] == 1
+    tier, sources = derive_tier({"mcp-customer/orders", "mcp-customer/billing"}, manifests)
     assert tier == 2
-    assert sources == {"mcp-billing": 2, "mcp-orders": 1}
+    assert sources == {"mcp-customer/billing": 2, "mcp-customer/orders": 1}
 
 
 def test_p95() -> None:

@@ -16,7 +16,7 @@ from langgraph.types import Checkpointer
 from cfa.agent.context import AGENT_ID, RequestContext
 from cfa.agent.graph import AgentConfig, build_graph
 from cfa.agent.middleware import AssistantState, model_metadata
-from cfa.agent.skills_client import SkillClient, skill_endpoints
+from cfa.agent.skills_client import SkillClient
 from cfa.audit import Action, AuditEvent, AuditLog, content_hash
 from cfa.config import AgentSettings, IdentitySettings
 from cfa.identity.client import IdpClient
@@ -57,14 +57,14 @@ class AssistantService:
     ) -> AskResult:
         trace_id = uuid.uuid4().hex
         started = time.perf_counter()
-        # The agent trades the user's token for one delegated token per skill.
-        skill_tokens = await self._idp.exchange_for_skills(user_token)
+        # The agent trades the user's token for a delegated token for the skill server.
+        skill_token = await self._idp.exchange_for_skills(user_token)
         context = RequestContext(
             trace_id=trace_id,
             user=user.sub,
             customer_id=user.customer_id,
             agent=AGENT_ID,
-            skill_tokens=skill_tokens,
+            skill_token=skill_token,
             eval_mutant=eval_mutant,
         )
         state = await self._graph.ainvoke(
@@ -112,7 +112,7 @@ def build_service(
     checkpointer: Checkpointer | None = None,
 ) -> AssistantService:
     """Single composition root shared by the BFF and the eval harness."""
-    skills = SkillClient(skill_endpoints(settings.orders_mcp_url, settings.billing_mcp_url, settings.service_mcp_url))
+    skills = SkillClient(settings.skill_server_url)
     graph = build_graph(settings=settings, audit=audit, skills=skills, config=config, checkpointer=checkpointer)
     idp = IdpClient(identity.idp_url, identity.agent_client_id, identity.agent_client_secret.get_secret_value())
     return AssistantService(graph, audit, idp)

@@ -1,8 +1,9 @@
 """JWT validation shared by the BFF and the skill servers.
 
 Tokens are RS256, signed by the IdP and validated against its JWKS endpoint.
-Audience validation is mandatory: a token minted for ``mcp-orders`` is useless at
-``mcp-billing`` (no token passthrough, no confused deputy).
+Audience validation is mandatory: the user's token (audience ``cfa-bff``) is useless
+at the skill server ``mcp-customer``, and a delegated token is useless anywhere else
+(no token passthrough, no confused deputy).
 """
 
 import asyncio
@@ -31,7 +32,7 @@ class Actor(BaseModel):
 
 class DelegatedClaims(BaseModel):
     """Claims of a delegated token (RFC 8693): the user is the subject, the agent
-    is the actor, and the audience is exactly one skill server."""
+    is the actor, and the audience is the skill server (``mcp-customer``)."""
 
     sub: str
     customer_id: str

@@ -1,7 +1,10 @@
 name: billing
-audience: mcp-billing
+title: Billing & invoices
 description: Invoices, amounts paid, outstanding balances and due dates for the signed-in customer.
 risk_tier: 2          # financial data: stricter gates apply to anything that touches it
 required_agent_scope: billing.read
 required_user_role: billing:view
 tools: [list_invoices, get_invoice]
+examples:
+  - How much do we still owe on invoice INV-4127?
+  - Which invoices are unpaid?
