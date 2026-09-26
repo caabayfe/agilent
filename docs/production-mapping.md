@@ -11,7 +11,7 @@
 | Skills (MCP servers) | FastMCP over streamable HTTP, one per data product | Container Apps behind **APIM MCP gateway** | ECS/Lambda behind **AgentCore Gateway** |
 | Model gateway | LiteLLM (`gateway/profiles`) | **APIM AI Gateway**: backend pools, circuit breaker, token limits, semantic cache, managed identity | **Bedrock** (Converse, cross-region inference, Guardrails); LiteLLM on EKS for non-Bedrock vendors |
 | Managed router (optional, behind alias) | – | Foundry Model Router | Bedrock Intelligent Prompt Routing |
-| Models | Scripted fake / gpt-5-mini + gpt-5.4 | Azure OpenAI / Foundry deployments | Bedrock models |
+| Models | Scripted fake / gpt-4.1-mini + gpt-5.4 (Azure OpenAI) | Azure OpenAI / Foundry deployments | Bedrock models |
 | Secrets | `.env` (gitignored, generated) | Key Vault + managed identity (no keys in pods) | Secrets Manager + IAM roles |
 | Audit / lineage | `audit.events` table (append-only via grants) | OTel GenAI spans → App Insights, plus an immutable audit store (Log Analytics / immutable Blob) | OTel → CloudWatch / X-Ray, plus S3 Object Lock |
 | Evals | `evals/` harness, on demand | Same harness in the release pipeline; Foundry evaluations for advisory quality scores | Same harness; Bedrock Evaluations for advisory scores |

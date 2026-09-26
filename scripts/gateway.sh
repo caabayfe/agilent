@@ -20,7 +20,8 @@ cp "$src" gateway/active.yaml
 echo "$profile" > gateway/active.profile
 echo "gateway profile -> $profile"
 if docker compose ps --status running --services 2>/dev/null | grep -qx litellm; then
-  docker compose restart litellm >/dev/null 2>&1
+  # Recreate (not restart) so changes to .env credentials are picked up too.
+  docker compose up -d --force-recreate --no-deps litellm >/dev/null 2>&1
   printf "waiting for gateway"
   for _ in $(seq 1 60); do
     if [[ "$(docker inspect -f '{{.State.Health.Status}}' "$(docker compose ps -q litellm)")" == healthy ]]; then

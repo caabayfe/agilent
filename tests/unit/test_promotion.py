@@ -2,7 +2,7 @@ from typing import Any
 
 import pytest
 
-from evals.gates import GateResult, p95
+from evals.gates import GateResult, p95, worst_class_p95
 from evals.promotion import Decision, decide, derive_tier, load_policy, skill_manifests
 
 POLICY = load_policy()
@@ -54,3 +54,11 @@ def test_p95() -> None:
     assert p95([100] * 19 + [9000]) == 100
     assert p95([100] * 18 + [9000, 9000]) == 9000
     assert p95([]) == 0
+
+
+def test_latency_gate_uses_the_slowest_model_class() -> None:
+    # A slow path that is 3% of traffic vanishes in a blended p95; per-class p95 keeps it visible.
+    runs = {"assistant-fast": [1000] * 97, "assistant-reasoning": [6000] * 3}
+    assert p95([v for values in runs.values() for v in values]) == 1000
+    assert worst_class_p95(runs) == ("assistant-reasoning", 6000)
+    assert worst_class_p95({}) == ("none", 0)

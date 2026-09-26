@@ -7,7 +7,7 @@ import { Header } from "./components/Header";
 import { TracePanel } from "./components/TracePanel";
 import { classes, newId } from "./format";
 import { SUGGESTIONS } from "./suggestions";
-import type { AuditEvent, EvalsView, GatewayInfo, Message, Persona, Session } from "./types";
+import type { AuditEvent, ChatAnswer, EvalsView, GatewayInfo, Message, Persona, Session } from "./types";
 
 type Tab = "trace" | "evals";
 
@@ -67,13 +67,14 @@ export function App() {
   }, [signIn, refreshGateway, refreshEvals]);
 
   const selectTrace = useCallback(
-    (id: string) => {
-      if (!session) return;
+    (id: string, token?: string) => {
+      const bearer = token ?? session?.token;
+      if (!bearer) return;
       setTab("trace");
       setTraceId(id);
       setTrace(null);
       setTraceError(null);
-      api.audit(session.token, id).then(setTrace, (e: unknown) => {
+      api.audit(bearer, id).then(setTrace, (e: unknown) => {
         setTraceError(e instanceof Error ? e.message : "Could not load trace");
       });
     },
@@ -86,9 +87,21 @@ export function App() {
       setMessages((m) => [...m, { id: newId(), role: "user", text }]);
       setBusy(true);
       try {
-        const answer = await api.chat(session.token, text, threadId);
+        let token = session.token;
+        let answer: ChatAnswer;
+        try {
+          answer = await api.chat(token, text, threadId);
+        } catch (e) {
+          if (!(e instanceof ApiError && e.status === 401)) throw e;
+          // Mock SSO: an IdP restart rotates its signing key and invalidates the session.
+          // Sign in again silently (the equivalent of a token refresh) and retry once.
+          const fresh = await api.login(session.user.sub);
+          setSession(fresh);
+          token = fresh.token;
+          answer = await api.chat(token, text, threadId);
+        }
         setMessages((m) => [...m, { id: newId(), role: "assistant", text: answer.answer, meta: answer }]);
-        selectTrace(answer.trace_id);
+        selectTrace(answer.trace_id, token);
       } catch (e) {
         const message =
           e instanceof ApiError && e.status === 401

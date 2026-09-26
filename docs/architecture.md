@@ -19,7 +19,7 @@ flowchart LR
     PG[(postgres<br/>orders · billing · service<br/>identity · audit · registry)]
     EV[evals harness<br/>profile: tools]
   end
-  LIVE[(gpt-5-mini / gpt-5.4<br/>Azure OpenAI / Foundry)]
+  LIVE[(gpt-4.1-mini / gpt-5.4<br/>Azure OpenAI / Foundry)]
 
   UI --> NGINX --> BFF
   BFF -- login / token exchange --> IDP

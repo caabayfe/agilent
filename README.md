@@ -8,7 +8,7 @@ A small, working slice of an agent plane that runs on a laptop. A customer-facin
 - An **eval harness** computes whether the composition may be promoted, and proves its own gates are relevant.
 
 ```
-Browser ─► nginx (CSP) ─► BFF + LangGraph agent ─┬─► LiteLLM gateway ─► gpt-5-mini / gpt-5.4 (or offline fake models)
+Browser ─► nginx (CSP) ─► BFF + LangGraph agent ─┬─► LiteLLM gateway ─► gpt-4.1-mini / gpt-5.4 (or offline fake models)
                                                  ├─► mock IdP (token exchange: one delegated token per skill)
                                                  └─► mcp-orders · mcp-billing · mcp-service ─► Postgres (+ audit, registry)
 ```
@@ -35,8 +35,8 @@ The stack starts on **offline scripted models**, so everything works without cre
 1. Open `.env` (created by `make up` / `make init`; gitignored, mode 600) and fill in:
 
    ```bash
-   # assistant-fast (gpt-5-mini)
-   MODEL_FAST_LITELLM_MODEL=azure/<gpt-5-mini-deployment-name>
+   # assistant-fast (a small, fast model: gpt-4.1-mini, or gpt-5-mini if deployed)
+   MODEL_FAST_LITELLM_MODEL=azure/<fast-deployment-name>
    MODEL_FAST_API_BASE=https://<resource>.openai.azure.com
    MODEL_FAST_API_KEY=<key>
    MODEL_FAST_API_VERSION=2025-04-01-preview
@@ -119,7 +119,7 @@ More in [docs/use-cases.md](docs/use-cases.md). The full readout is in [docs/dem
 
 ## Troubleshooting
 
-- **401 after restarting the stack:** the mock IdP's signing keys are ephemeral. Pick the persona again.
+- **After restarting the stack:** the mock IdP generates new signing keys, which invalidates existing sessions. The UI signs in again automatically and retries once. If a page was open for a long time, reload it.
 - **`make gateway PROFILE=live` refuses to start:** a `MODEL_*` variable is empty in `.env`.
 - **Live model errors:** `make logs` shows the gateway error. `make gateway PROFILE=fake` gets you back to a working demo in seconds.
 - **The Evals tab shows STALE:** something bound to the certificate changed (gateway config, prompt, routing, dataset). Run `make eval` again.

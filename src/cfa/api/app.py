@@ -74,6 +74,8 @@ async def current_user(
     validator: TokenValidator = request.app.state.validator
     try:
         claims = await validator.decode(credentials.credentials, identity_settings().bff_audience)
+    except jwt.PyJWKClientConnectionError as exc:
+        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, "Identity provider unavailable.") from exc
     except jwt.InvalidTokenError as exc:
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Invalid or expired session, please sign in again.") from exc
     return credentials.credentials, UserClaims.model_validate(claims)
@@ -102,7 +104,12 @@ async def login(body: LoginRequest, request: Request) -> dict[str, Any]:
     except httpx.HTTPStatusError as exc:
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Unknown user.") from exc
     validator: TokenValidator = request.app.state.validator
-    claims = UserClaims.model_validate(await validator.decode(token, identity_settings().bff_audience))
+    try:
+        raw = await validator.decode(token, identity_settings().bff_audience)
+    except jwt.PyJWTError as exc:
+        log.warning("IdP issued a token that does not validate: %s", type(exc).__name__)
+        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, "Sign-in is temporarily unavailable.") from exc
+    claims = UserClaims.model_validate(raw)
     return {"access_token": token, "user": claims.model_dump()}
 
 
@@ -122,10 +129,25 @@ async def chat(body: ChatRequest, request: Request, user: User) -> dict[str, Any
         raise HTTPException(
             status.HTTP_502_BAD_GATEWAY, f"The model gateway returned an error ({type(exc).__name__})."
         ) from exc
+    except httpx.HTTPStatusError as exc:
+        if _is_invalid_grant(exc.response):
+            # The IdP no longer accepts the user's token (e.g. its signing key was rotated).
+            raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Session expired, please sign in again.") from exc
+        log.warning("identity provider error: HTTP %s", exc.response.status_code)
+        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, "Identity provider unavailable.") from exc
     except httpx.HTTPError as exc:
         log.warning("identity provider error: %s", type(exc).__name__)
         raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, "Identity provider unavailable.") from exc
     return asdict(result)
+
+
+def _is_invalid_grant(response: httpx.Response) -> bool:
+    if response.status_code != status.HTTP_400_BAD_REQUEST:
+        return False
+    try:
+        return bool(response.json().get("detail") == "invalid_grant")
+    except ValueError:
+        return False
 
 
 @app.get("/api/audit/{trace_id}")
@@ -145,22 +167,41 @@ def _gateway_dir() -> Path:
     return Path(gateway_info_settings().gateway_config_dir)
 
 
+def _alias_entry(params: dict[str, Any]) -> dict[str, str]:
+    base = str(params.get("api_base") or "")
+    host = base if base.startswith("os.environ/") else (urlparse(base).hostname or base)
+    return {"model": str(params.get("model", "")), "api_base_host": host}
+
+
+async def _loaded_aliases() -> dict[str, list[dict[str, str]]] | None:
+    """What the gateway actually loaded (env references resolved); None if unreachable."""
+    settings = agent_settings()
+    url = settings.gateway_url.removesuffix("/v1") + "/model/info"
+    headers = {"authorization": f"Bearer {settings.gateway_api_key.get_secret_value()}"}
+    try:
+        async with httpx.AsyncClient(timeout=3.0) as client:
+            response = await client.get(url, headers=headers)
+            response.raise_for_status()
+            data: list[dict[str, Any]] = response.json()["data"]
+    except (httpx.HTTPError, KeyError, ValueError):
+        return None
+    aliases: dict[str, list[dict[str, str]]] = {}
+    for entry in data:
+        aliases.setdefault(entry["model_name"], []).append(_alias_entry(entry.get("litellm_params", {})))
+    return aliases
+
+
 @app.get("/api/gateway")
 async def gateway() -> dict[str, Any]:
     """Alias -> deployment mapping currently loaded in the gateway (no secrets)."""
     directory = _gateway_dir()
     path = directory / "active.yaml"
     config: dict[str, Any] = yaml.safe_load(path.read_text()) if path.exists() else {}
-    aliases: dict[str, list[dict[str, str]]] = {}
-    for entry in config.get("model_list", []):
-        params = entry.get("litellm_params", {})
-        base = str(params.get("api_base", ""))
-        aliases.setdefault(entry["model_name"], []).append(
-            {
-                "model": str(params.get("model", "")),
-                "api_base_host": urlparse(base).hostname or base if not base.startswith("os.environ/") else base,
-            }
-        )
+    aliases = await _loaded_aliases()
+    if aliases is None:
+        aliases = {}
+        for entry in config.get("model_list", []):
+            aliases.setdefault(entry["model_name"], []).append(_alias_entry(entry.get("litellm_params", {})))
     fallbacks = config.get("router_settings", {}).get("fallbacks", [])
     return {"profile": gateway_profile(directory), "aliases": aliases, "fallbacks": fallbacks}
 

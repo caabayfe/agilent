@@ -1,7 +1,7 @@
 """Aggregate per-case verdicts into gate results."""
 
 import math
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -59,6 +59,14 @@ class GateResult:
         }
 
 
+def worst_class_p95(latencies_by_alias: Mapping[str, Sequence[int]]) -> tuple[str, int]:
+    """p95 of the slowest model class. A blended p95 lets a slow but rare path (e.g.
+    troubleshooting on the reasoning model) hide behind the fast majority."""
+    if not latencies_by_alias:
+        return "none", 0
+    return max(((alias, p95(values)) for alias, values in latencies_by_alias.items()), key=lambda item: item[1])
+
+
 def p95(values: Sequence[int]) -> int:
     if not values:
         return 0
@@ -87,12 +95,11 @@ def score_gates(results: Sequence[CaseResult], policy: dict[str, Any]) -> dict[s
 
     spec = policy["gates"]["G4"]
     budget = int(spec["p95_latency_ms"])
-    latencies = [run.latency_ms for r in results for run in r.runs]
-    observed = p95(latencies)
     by_alias: dict[str, list[int]] = {}
     for r in results:
         for run in r.runs:
             by_alias.setdefault(run.alias or "unknown", []).append(run.latency_ms)
+    worst_alias, observed = worst_class_p95(by_alias)
     breakdown = ", ".join(f"{alias} p95={p95(v)}ms" for alias, v in sorted(by_alias.items()))
     slow = sorted({r.case["id"] for r in results for run in r.runs if run.latency_ms > budget})
     gates["G4"] = GateResult(
@@ -102,7 +109,7 @@ def score_gates(results: Sequence[CaseResult], policy: dict[str, Any]) -> dict[s
         observed <= budget,
         float(observed),
         float(budget),
-        f"p95 end-to-end latency {observed}ms vs budget {budget}ms ({breakdown})",
+        f"slowest model class p95 {observed}ms ({worst_alias}) vs budget {budget}ms ({breakdown})",
         slow,
     )
     return gates

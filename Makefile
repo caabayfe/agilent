@@ -65,10 +65,10 @@ restore-agent-scope: ## Restore a revoked agent scope: make restore-agent-scope 
 
 # ---------------------------------------------------------------- evals
 eval: ## Baseline eval: gates, grader canaries, promotion decision
-	$(COMPOSE) run --rm evals python -m evals.run $(ARGS)
+	$(COMPOSE) run --rm --no-deps evals python -m evals.run $(ARGS)
 
 eval-mutants: ## Mutation runs: prove each gate catches the regression it exists for
-	$(COMPOSE) run --rm evals python -m evals.run --mutants
+	$(COMPOSE) run --rm --no-deps evals python -m evals.run --mutants
 
 # ---------------------------------------------------------------- quality gates
 check: ## All quality gates: Python (in Docker) + UI

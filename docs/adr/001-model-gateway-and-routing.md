@@ -5,7 +5,7 @@
 
 ## Context
 
-The brief requires that a provider swap be "a mechanical change at the gateway", that the agent survive it, and that we can say which model answered each request. The PoC also has to show a model router across two models: gpt-5-mini (fast) and gpt-5.4 (reasoning).
+The brief requires that a provider swap be "a mechanical change at the gateway", that the agent survive it, and that we can say which model answered each request. The PoC also has to show a model router across two models: a fast model and gpt-5.4 (reasoning). gpt-5-mini was planned for the fast alias; the available Azure resource has no gpt-5-mini deployment, so the live profile uses gpt-4.1-mini. That substitution was a `.env` change only, which is the point of the alias seam.
 
 "Model routing" hides two different decisions:
 
