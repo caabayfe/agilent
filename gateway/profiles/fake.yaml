@@ -1,0 +1,32 @@
+# Offline profile: deterministic scripted models, no credentials needed.
+model_list:
+  - model_name: assistant-fast
+    litellm_params:
+      model: openai/fake-fast
+      api_base: http://fake-llm:8000/v1
+      api_key: os.environ/FAKE_LLM_API_KEY
+  - model_name: assistant-reasoning
+    litellm_params:
+      model: openai/fake-reasoning
+      api_base: http://fake-llm:8000/v1
+      api_key: os.environ/FAKE_LLM_API_KEY
+
+  # Eval-only alias: a fluent but fact-corrupting "cheaper model" (mutant M4).
+  - model_name: eval-weak
+    litellm_params:
+      model: openai/fake-weak
+      api_base: http://fake-llm:8000/v1
+      api_key: os.environ/FAKE_LLM_API_KEY
+
+router_settings:
+  # Failover is a gateway concern, not an agent concern.
+  fallbacks: [{"assistant-reasoning": ["assistant-fast"]}]
+  num_retries: 0
+
+litellm_settings:
+  drop_params: true          # e.g. gpt-5.x rejects temperature; the gateway strips it
+  request_timeout: 60
+
+general_settings:
+  master_key: os.environ/LITELLM_MASTER_KEY
+

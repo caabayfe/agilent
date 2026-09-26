@@ -1,0 +1,72 @@
+[project]
+name = "cfa"
+version = "0.1.0"
+description = "Customer Facing Assistant - agent-plane PoC (MCP skills, model gateway, identity, audit, evals)"
+requires-python = ">=3.13,<3.14"
+dependencies = [
+    "fastapi>=0.141.1",
+    "httpx>=0.28.1",
+    "langchain>=1.4.2",
+    "langchain-openai>=1.6.6",
+    "langgraph>=1.2.12",
+    "mcp>=1.23,<2",
+    "psycopg[binary,pool]>=3.3.6",
+    "pydantic-settings>=2.15.0",
+    "pyjwt[crypto]>=2.15.0",
+    "pyyaml>=6.0.3",
+    "uvicorn[standard]>=0.54.0",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/cfa", "evals"]
+
+[dependency-groups]
+dev = [
+    "mypy>=2.3.1",
+    "pip-audit>=2.10.1",
+    "pytest>=9.1.1",
+    "pytest-asyncio>=1.4.0",
+    "ruff>=0.16.9",
+    "types-pyyaml>=6.0.12.20260906",
+]
+
+[tool.ruff]
+line-length = 120
+target-version = "py313"
+src = ["src", "."]
+extend-exclude = ["ui"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP", "S", "ASYNC", "PT", "SIM", "RUF", "N", "C4", "RET", "PL", "TRY", "BLE", "DTZ", "T20", "PTH", "ERA"]
+ignore = [
+    "PLR0913",  # keyword-only factories legitimately take many collaborators
+    "PLR2004",  # magic values are fine in tests and thresholds
+    "TRY003",   # short inline exception messages are clearer here
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["S101", "PLR2004", "S105", "S106"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["cfa", "evals"]
+
+[tool.mypy]
+strict = true
+python_version = "3.13"
+files = ["src", "evals", "tests"]
+plugins = ["pydantic.mypy"]
+warn_unreachable = true
+
+[[tool.mypy.overrides]]
+module = ["psycopg_pool.*"]
+follow_untyped_imports = true
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+addopts = "-p no:cacheprovider"
+markers = ["integration: needs the running docker compose stack"]

@@ -1,0 +1,146 @@
+# Customer Facing Assistant PoC. Only the UI (5173) and the BFF (8000) are
+# published, and only on localhost; everything else lives on the private network.
+name: cfa
+
+x-app: &app
+  build: {context: ., target: runtime}
+  image: cfa-app:local
+  restart: unless-stopped
+  read_only: true
+  tmpfs: [/tmp]
+  security_opt: ["no-new-privileges:true"]
+  cap_drop: [ALL]
+
+x-skill-env: &skill-env
+  IDP_URL: http://idp:8000
+  IDP_ISSUER: http://idp:8000
+  ALLOW_EVAL_MUTANTS: ${ALLOW_EVAL_MUTANTS:-false}
+
+services:
+  postgres:
+    image: postgres:16.10-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: cfa
+      POSTGRES_USER: cfa_admin
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?run make init}
+      DB_PASSWORD_ORDERS: ${DB_PASSWORD_ORDERS:?run make init}
+      DB_PASSWORD_BILLING: ${DB_PASSWORD_BILLING:?run make init}
+      DB_PASSWORD_SERVICE: ${DB_PASSWORD_SERVICE:?run make init}
+      DB_PASSWORD_PLATFORM: ${DB_PASSWORD_PLATFORM:?run make init}
+      DB_PASSWORD_EVAL: ${DB_PASSWORD_EVAL:?run make init}
+    volumes:
+      - ./db/init:/docker-entrypoint-initdb.d:ro
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U cfa_admin -d cfa"]
+      interval: 3s
+      retries: 20
+
+  idp:
+    <<: *app
+    command: ["uvicorn", "cfa.identity.idp:app", "--host", "0.0.0.0", "--port", "8000"]
+    environment:
+      DATABASE_URL: postgresql://cfa_platform:${DB_PASSWORD_PLATFORM}@postgres:5432/cfa
+      AGENT_CLIENT_SECRET: ${AGENT_CLIENT_SECRET:?run make init}
+    depends_on: {postgres: {condition: service_healthy}}
+
+  mcp-orders:
+    <<: *app
+    command: ["uvicorn", "cfa.skills.orders.server:app", "--host", "0.0.0.0", "--port", "8000"]
+    environment:
+      <<: *skill-env
+      DATABASE_URL: postgresql://cfa_orders:${DB_PASSWORD_ORDERS}@postgres:5432/cfa
+    depends_on: {postgres: {condition: service_healthy}, idp: {condition: service_healthy}}
+
+  mcp-billing:
+    <<: *app
+    command: ["uvicorn", "cfa.skills.billing.server:app", "--host", "0.0.0.0", "--port", "8000"]
+    environment:
+      <<: *skill-env
+      DATABASE_URL: postgresql://cfa_billing:${DB_PASSWORD_BILLING}@postgres:5432/cfa
+    depends_on: {postgres: {condition: service_healthy}, idp: {condition: service_healthy}}
+
+  mcp-service:
+    <<: *app
+    command: ["uvicorn", "cfa.skills.service.server:app", "--host", "0.0.0.0", "--port", "8000"]
+    environment:
+      <<: *skill-env
+      DATABASE_URL: postgresql://cfa_service:${DB_PASSWORD_SERVICE}@postgres:5432/cfa
+    depends_on: {postgres: {condition: service_healthy}, idp: {condition: service_healthy}}
+
+  fake-llm:
+    <<: *app
+    command: ["uvicorn", "cfa.fake_llm.app:app", "--host", "0.0.0.0", "--port", "8000"]
+    environment:
+      FAKE_LLM_API_KEY: ${FAKE_LLM_API_KEY:?run make init}
+
+  litellm:
+    image: ghcr.io/berriai/litellm:main-stable
+    restart: unless-stopped
+    command: ["--config", "/app/gateway/active.yaml", "--port", "4000"]
+    environment:
+      LITELLM_MASTER_KEY: ${LITELLM_MASTER_KEY:?run make init}
+      FAKE_LLM_API_KEY: ${FAKE_LLM_API_KEY}
+      MODEL_FAST_LITELLM_MODEL: ${MODEL_FAST_LITELLM_MODEL:-}
+      MODEL_FAST_API_BASE: ${MODEL_FAST_API_BASE:-}
+      MODEL_FAST_API_KEY: ${MODEL_FAST_API_KEY:-}
+      MODEL_FAST_API_VERSION: ${MODEL_FAST_API_VERSION:-}
+      MODEL_REASONING_LITELLM_MODEL: ${MODEL_REASONING_LITELLM_MODEL:-}
+      MODEL_REASONING_API_BASE: ${MODEL_REASONING_API_BASE:-}
+      MODEL_REASONING_API_KEY: ${MODEL_REASONING_API_KEY:-}
+      MODEL_REASONING_API_VERSION: ${MODEL_REASONING_API_VERSION:-}
+    volumes:
+      - ./gateway:/app/gateway:ro
+    healthcheck:
+      test: ["CMD-SHELL", "python3 -c \"import urllib.request; urllib.request.urlopen('http://127.0.0.1:4000/health/liveliness', timeout=2)\""]
+      interval: 5s
+      retries: 30
+    depends_on: [fake-llm]
+
+  api:
+    <<: *app
+    environment:
+      DATABASE_URL: postgresql://cfa_platform:${DB_PASSWORD_PLATFORM}@postgres:5432/cfa
+      AGENT_CLIENT_SECRET: ${AGENT_CLIENT_SECRET}
+      GATEWAY_URL: http://litellm:4000/v1
+      GATEWAY_API_KEY: ${LITELLM_MASTER_KEY}
+    volumes:
+      - ./gateway:/app/gateway:ro
+      - ./evals/reports:/app/evals/reports:ro
+    ports: ["127.0.0.1:8000:8000"]
+    depends_on:
+      idp: {condition: service_healthy}
+      mcp-orders: {condition: service_healthy}
+      mcp-billing: {condition: service_healthy}
+      mcp-service: {condition: service_healthy}
+      litellm: {condition: service_healthy}
+
+  # On-demand eval harness: `make eval`. Its own DB role (cfa_eval) reads ground truth.
+  evals:
+    <<: *app
+    restart: "no"
+    profiles: [tools]
+    command: ["python", "-m", "evals.run"]
+    environment:
+      AGENT_CLIENT_SECRET: ${AGENT_CLIENT_SECRET}
+      GATEWAY_URL: http://litellm:4000/v1
+      GATEWAY_API_KEY: ${LITELLM_MASTER_KEY}
+      EVAL_DATABASE_URL: postgresql://cfa_eval:${DB_PASSWORD_EVAL}@postgres:5432/cfa
+    volumes:
+      - ./gateway:/app/gateway:ro
+      - ./evals/reports:/app/evals/reports
+    depends_on: {api: {condition: service_healthy}}
+
+  ui:
+    build: {context: ./ui}
+    image: cfa-ui:local
+    restart: unless-stopped
+    read_only: true
+    tmpfs: [/tmp, /var/cache/nginx, /var/run]
+    security_opt: ["no-new-privileges:true"]
+    ports: ["127.0.0.1:5173:8080"]
+    depends_on: {api: {condition: service_healthy}}
+
+volumes:
+  pgdata:

@@ -1,0 +1,7 @@
+name: service
+audience: mcp-service
+description: Installed instruments, warranty, service visit history and troubleshooting knowledge base.
+risk_tier: 1
+required_agent_scope: service.read
+required_user_role: service:view
+tools: [get_service_history, search_troubleshooting]
