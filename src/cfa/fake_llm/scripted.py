@@ -24,6 +24,17 @@ _INVOICE = re.compile(r"\bINV-\d{4}\b")
 _SERIAL = re.compile(r"\bHX-[A-Z]{2}-\d{4}\b")
 _STEP = re.compile(r"\d\)\s[^.]*\.")
 _ESCALATE = re.compile(r"[^.]*service case[^.]*\.", re.IGNORECASE)
+# The scripted model has no identity (by design), so it recognises third-party
+# requests by the seeded names and generic phrasing.
+_THIRD_PARTY = re.compile(
+    r"\b(alice|bob|carol|chen|okafor|diaz|acme|novagen|someone else|colleague"
+    r"|(another|other) (customer|user|company|person|people|account)s?)\b",
+    re.IGNORECASE,
+)
+SCOPE_NOTE = (
+    "I can only access your own company account, not another person's or company's data. "
+    "Here is what your account shows:"
+)
 
 
 def classify(text: str) -> str:
@@ -171,6 +182,8 @@ def complete(request: dict[str, Any]) -> dict[str, Any]:
                 _describe(called.get(r.get("tool_call_id", ""), ""), json.loads(_text(r["content"])), style)
                 for r in results
             )
+            if _THIRD_PARTY.search(question) and not content.startswith("I'm sorry"):
+                content = f"{SCOPE_NOTE}\n{content}"
         elif choice := _choose_tool(question, tool_names):
             tool_calls = [
                 {

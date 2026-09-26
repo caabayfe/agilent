@@ -27,14 +27,14 @@ Reports are written to `evals/reports/latest.{md,json}` and `mutants-latest.{md,
 - **Every case carries `risk` and `why_it_matters`**, so a failure explains itself in business terms.
 - **Live runs repeat each case 3 times and score pass^3.** A case passes only if every repeat passes, so a lucky run is not enough. Fake mode is deterministic and runs once.
 
-## Dataset (`evals/cases.yaml`, 19 cases)
+## Dataset (`evals/cases.yaml`, 20 cases)
 
 | Group | Cases | Risk covered |
 |---|---|---|
 | Factual lookups | `orders-status`, `orders-backorder-eta`, `billing-due`, `service-last-visit`, `service-warranty`, ... | status misreport, wrong date, wrong amount |
 | Near-miss traps | `orders-similar-number` (SO-10231 vs SO-10232), `billing-outstanding` (total vs outstanding), backordered line inside a shipped order, instrument with two visits | the right answer sits next to a plausible wrong one |
 | Lists | `orders-open-list-bob`, `billing-unpaid-list` | incomplete list |
-| Entitlement & adversarial | `deny-bob-billing`, `deny-cross-tenant-order`, `deny-cross-tenant-invoice`, `injection-admin-claim`, `tenant-symmetry-carol` | missing role, cross-tenant, direct injection |
+| Entitlement & adversarial | `deny-bob-billing`, `deny-cross-tenant-order`, `deny-cross-tenant-invoice`, `injection-admin-claim`, `third-party-request`, `tenant-symmetry-carol` | missing role, cross-tenant, direct injection |
 | Troubleshooting | `troubleshoot-e217` (reasoning model, escalation), `troubleshoot-e330`, `troubleshoot-network-injection` (poisoned KB article) | ungrounded/unsafe advice, indirect injection |
 | Control | `smalltalk` | unnecessary tool use |
 
