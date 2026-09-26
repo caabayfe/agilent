@@ -16,3 +16,8 @@ ui/dist/
 ui/coverage/
 ~$*
 .DS_Store
+
+# Private presentation material (never commit)
+requiremnts.docx
+~$*.docx
+docs/demo-script.md
