@@ -1,7 +1,7 @@
 """Aggregate per-case verdicts into gate results."""
 
 import math
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -21,12 +21,25 @@ class RunRecord:
     verdicts: dict[str, dict[str, Any]]  # gate id -> Verdict.to_dict()
     evidence: str = ""
     touched: list[str] = field(default_factory=list)  # skill components reached, e.g. mcp-customer/billing
+    model_calls: int = 0  # route + assistant turns; a provider swap can change the ReAct loop length
+    tokens_in: int = 0
+    tokens_out: int = 0
+    tool_errors: int = 0  # tool calls that returned {"error": ...} (denial, outage, rate limit)
 
 
 @dataclass(slots=True)
 class CaseResult:
     case: dict[str, Any]
     runs: list[RunRecord] = field(default_factory=list)
+
+    def reference_evidence(self) -> str:
+        """Tool evidence from the first repeat whose tool calls all succeeded (else repeat 0).
+
+        Canary controls are graded against this; a transient outage on one repeat
+        must not make the harness reject a correct control answer.
+        """
+        clean = [run for run in self.runs if run.tool_errors == 0 and run.evidence]
+        return (clean or self.runs)[0].evidence if self.runs else ""
 
     def passed(self, gate: str) -> bool | None:
         verdicts = [run.verdicts.get(gate) for run in self.runs]
@@ -59,12 +72,23 @@ class GateResult:
         }
 
 
-def worst_class_p95(latencies_by_alias: Mapping[str, Sequence[int]]) -> tuple[str, int]:
-    """p95 of the slowest model class. A blended p95 lets a slow but rare path (e.g.
-    troubleshooting on the reasoning model) hide behind the fast majority."""
+def latency_budgets(spec: int | Mapping[str, int]) -> Callable[[str | None], int]:
+    """G4 budget per model class. An alias without its own budget gets the strictest one."""
+    if isinstance(spec, int):
+        return lambda _alias: spec
+    budgets = {str(k): int(v) for k, v in spec.items()}
+    strictest = min(budgets.values())
+    return lambda alias: budgets.get(alias or "", strictest)
+
+
+def worst_class_vs_budget(
+    latencies_by_alias: Mapping[str, Sequence[int]], budget_of: Callable[[str | None], int]
+) -> tuple[str, int, int]:
+    """The model class furthest over (or closest to) its own budget: (alias, p95, budget)."""
     if not latencies_by_alias:
-        return "none", 0
-    return max(((alias, p95(values)) for alias, values in latencies_by_alias.items()), key=lambda item: item[1])
+        return "none", 0, budget_of(None)
+    alias = max(latencies_by_alias, key=lambda a: p95(latencies_by_alias[a]) / budget_of(a))
+    return alias, p95(latencies_by_alias[alias]), budget_of(alias)
 
 
 def p95(values: Sequence[int]) -> int:
@@ -94,22 +118,22 @@ def score_gates(results: Sequence[CaseResult], policy: dict[str, Any]) -> dict[s
         )
 
     spec = policy["gates"]["G4"]
-    budget = int(spec["p95_latency_ms"])
     by_alias: dict[str, list[int]] = {}
     for r in results:
         for run in r.runs:
             by_alias.setdefault(run.alias or "unknown", []).append(run.latency_ms)
-    worst_alias, observed = worst_class_p95(by_alias)
-    breakdown = ", ".join(f"{alias} p95={p95(v)}ms" for alias, v in sorted(by_alias.items()))
-    slow = sorted({r.case["id"] for r in results for run in r.runs if run.latency_ms > budget})
+    budget_of = latency_budgets(spec["p95_latency_ms"])
+    worst_alias, observed, budget = worst_class_vs_budget(by_alias, budget_of)
+    breakdown = ", ".join(f"{alias} p95={p95(v)}ms/{budget_of(alias)}ms" for alias, v in sorted(by_alias.items()))
+    slow = sorted({r.case["id"] for r in results for run in r.runs if run.latency_ms > budget_of(run.alias)})
     gates["G4"] = GateResult(
         "G4",
         spec["name"],
         spec["catches"],
-        observed <= budget,
+        all(p95(v) <= budget_of(alias) for alias, v in by_alias.items()),
         float(observed),
         float(budget),
-        f"slowest model class p95 {observed}ms ({worst_alias}) vs budget {budget}ms ({breakdown})",
+        f"worst model class vs its budget: {worst_alias} p95 {observed}ms vs {budget}ms ({breakdown})",
         slow,
     )
     return gates

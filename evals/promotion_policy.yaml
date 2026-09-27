@@ -18,7 +18,13 @@ gates:
   G4:
     name: Latency budget
     catches: A composition too slow for self-service use.
-    p95_latency_ms: 4000
+    # Per model class, each held to its own p95 budget. A lookup (orders, billing) answered on the
+    # fast class and a diagnosis answered on the reasoning class have different acceptable waits;
+    # one number either blocks every reasoning model or lets a slow lookup through.
+    # A class without its own budget gets the strictest one.
+    p95_latency_ms:
+      assistant-fast: 6000
+      assistant-reasoning: 12000
 
 # A composition inherits the HIGHEST tier of any data product it touches.
 tiers:

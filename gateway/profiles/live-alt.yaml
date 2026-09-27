@@ -1,0 +1,36 @@
+# Cross-vendor swap: assistant-reasoning moves to a model from a different vendor
+# (MODEL_ALT_*, e.g. a Foundry catalogue model). assistant-fast and the agent are unchanged.
+model_list:
+  - model_name: assistant-fast
+    litellm_params:
+      model: os.environ/MODEL_FAST_LITELLM_MODEL
+      api_base: os.environ/MODEL_FAST_API_BASE
+      api_key: os.environ/MODEL_FAST_API_KEY
+      api_version: os.environ/MODEL_FAST_API_VERSION
+  - model_name: assistant-reasoning
+    litellm_params:
+      model: os.environ/MODEL_ALT_LITELLM_MODEL
+      api_base: os.environ/MODEL_ALT_API_BASE
+      api_key: os.environ/MODEL_ALT_API_KEY
+
+  # Eval-only alias: a fluent but fact-corrupting "cheaper model" (mutant M4).
+  - model_name: eval-weak
+    litellm_params:
+      model: openai/fake-weak
+      api_base: http://fake-llm:8000/v1
+      api_key: os.environ/FAKE_LLM_API_KEY
+
+router_settings:
+  # Failover is a gateway concern, not an agent concern.
+  fallbacks: [{"assistant-reasoning": ["assistant-fast"]}]
+  # A provider's safety refusal is a decision, not an outage: never fail it over to a
+  # deployment with a weaker content filter. (Without this, LiteLLM falls back to `fallbacks`.)
+  content_policy_fallbacks: [{"assistant-reasoning": []}, {"assistant-fast": []}]
+  num_retries: 0
+
+litellm_settings:
+  drop_params: true          # vendor-specific params the target does not accept are stripped here
+  request_timeout: 60
+
+general_settings:
+  master_key: os.environ/LITELLM_MASTER_KEY

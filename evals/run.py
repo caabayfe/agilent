@@ -3,6 +3,7 @@
     python -m evals.run              # baseline: gates + canaries + promotion decision
     python -m evals.run --mutants    # mutation runs: mutant x gate matrix
     python -m evals.run --repeats 3  # pass^k (default: 1 on the fake provider, 3 live)
+    python -m evals.run --label live # also keep this run as reports/runs/live.json (for evals.compare)
 
 Runs the exact service the BFF serves (``build_service``), against the real skill
 servers and gateway, then grades every run from the audit lineage.
@@ -32,6 +33,7 @@ from cfa.config import agent_settings, identity_settings
 from cfa.db import Pool, open_pool
 from cfa.identity.client import IdpClient
 from cfa.identity.tokens import TokenValidator, UserClaims
+from cfa.telemetry import configure_tracing
 from evals import graders
 from evals.gates import CaseResult, GateResult, RunRecord, score_gates
 from evals.ground_truth import Fact, GroundTruth
@@ -128,6 +130,7 @@ async def run_case(
     events = await harness.audit.for_trace(result.trace_id)
     tool_events = [e for e in events if e.action is Action.TOOL_CALL]
     decisions = [e.model_dump(mode="json") for e in events if e.action is Action.ACCESS_DECISION]
+    model_events = [e for e in events if e.action in (Action.ROUTE, Action.MODEL_CALL)]
     called = [e.name or "" for e in tool_events]
     evidence = graders.evidence_text(str(e.output.get("content", "")) for e in tool_events)
 
@@ -161,6 +164,10 @@ async def run_case(
         verdicts,
         evidence,
         sorted({d["component"] for d in decisions}),
+        len(model_events),
+        sum(e.tokens_in or 0 for e in model_events),
+        sum(e.tokens_out or 0 for e in model_events),
+        sum(e.decision == "error" for e in tool_events),
     )
 
 
@@ -179,6 +186,21 @@ async def run_suite(
     return results
 
 
+def grade_answer(harness: Harness, case: dict[str, Any], answer: str, evidence: str) -> tuple[bool, list[str]]:
+    """The answer-level graders (G1 grounded + G2 leakage) a canary, or any answer, must get past."""
+    persona = harness.personas[case["persona"]]
+    g1 = graders.grade_grounded(answer, harness.facts[case["id"]], evidence, case["question"])
+    g2 = graders.grade_leakage(
+        answer=answer,
+        question=case["question"],
+        customer_id=persona.claims.customer_id,
+        foreign=persona.foreign,
+        access_decisions=[],
+        forbid_allow_on=None,
+    )
+    return g1.passed and g2.passed, g1.notes + g2.notes
+
+
 def check_canaries(
     harness: Harness, baseline: list[CaseResult], canaries: list[dict[str, Any]]
 ) -> list[dict[str, Any]]:
@@ -187,22 +209,10 @@ def check_canaries(
     outcomes = []
     for canary in canaries:
         result = by_case[canary["case"]]
-        case, persona = result.case, harness.personas[result.case["persona"]]
-        real_evidence = result.runs[0].evidence if result.runs else ""
+        real_evidence = result.reference_evidence()
 
-        def accepted(
-            answer: str, evidence: str, case: dict[str, Any] = case, persona: Persona = persona
-        ) -> tuple[bool, list[str]]:
-            g1 = graders.grade_grounded(answer, harness.facts[case["id"]], evidence, case["question"])
-            g2 = graders.grade_leakage(
-                answer=answer,
-                question=case["question"],
-                customer_id=persona.claims.customer_id,
-                foreign=persona.foreign,
-                access_decisions=[],
-                forbid_allow_on=None,
-            )
-            return g1.passed and g2.passed, g1.notes + g2.notes
+        def accepted(answer: str, evidence: str, case: dict[str, Any] = result.case) -> tuple[bool, list[str]]:
+            return grade_answer(harness, case, answer, evidence)
 
         doctored_evidence = "" if canary.get("evidence") == "none" else real_evidence
         doctored_ok, doctored_notes = accepted(canary["doctored"], doctored_evidence)
@@ -240,7 +250,9 @@ def _touched(results: list[CaseResult]) -> set[str]:
     return {skill for r in results for run in r.runs for skill in run.touched}
 
 
-async def baseline(settings: EvalSettings, repeats: int) -> dict[str, Any]:
+async def baseline(settings: EvalSettings, repeats: int, *, publish: bool = True) -> dict[str, Any]:
+    """One baseline run. ``publish=False`` (evals.matrix) still records the decision in
+    the registry but does not replace ``reports/latest.json``, the promotion certificate."""
     cases, canaries, policy = load_cases(), load_canaries(), load_policy()
     run_id = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
     mode = gateway_profile(settings.gateway_config_dir)
@@ -284,7 +296,8 @@ async def baseline(settings: EvalSettings, repeats: int) -> dict[str, Any]:
                     Jsonb({"reasons": decision.reasons, "gates": {g: r.passed for g, r in gates.items()}}),
                 ),
             )
-    _write(settings.eval_reports_dir, "latest", report, render_baseline(report))
+    if publish:
+        _write(settings.eval_reports_dir, "latest", report, render_baseline(report))
     return report
 
 
@@ -406,17 +419,29 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--mutants", action="store_true", help="run mutation runs instead of the baseline")
     parser.add_argument("--repeats", type=int, default=None, help="runs per case (pass^k)")
+    parser.add_argument(
+        "--label", default=None, help="also keep this baseline as reports/runs/<label>.json (input to evals.compare)"
+    )
+    parser.add_argument(
+        "--label-dir", default="runs", help="directory under reports/ for --label (evals.matrix: matrix)"
+    )
+    parser.add_argument(
+        "--no-publish", action="store_true", help="do not replace reports/latest.json (the promotion certificate)"
+    )
     args = parser.parse_args()
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
     for noisy in ("httpx", "httpx2", "httpcore", "mcp"):
         logging.getLogger(noisy).setLevel(logging.WARNING)
+    configure_tracing("cfa-evals")  # every eval case is a trace in Jaeger, linked from its audit rows
     settings = EvalSettings()
     if args.mutants:
         report = asyncio.run(mutation_runs(settings))
         sys.stdout.write(render_mutants(report))
         return 0 if report["all_killed"] else 1
-    repeats = args.repeats or (1 if gateway_profile(settings.gateway_config_dir) == "fake" else 3)
-    report = asyncio.run(baseline(settings, repeats))
+    repeats = args.repeats or (1 if gateway_profile(settings.gateway_config_dir).startswith("fake") else 3)
+    report = asyncio.run(baseline(settings, repeats, publish=not args.no_publish))
+    if args.label:
+        _write(settings.eval_reports_dir / args.label_dir, args.label, report, render_baseline(report))
     sys.stdout.write(render_baseline(report))
     return 0
 

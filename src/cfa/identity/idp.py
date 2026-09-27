@@ -27,12 +27,14 @@ from cryptography.hazmat.primitives.asymmetric import rsa
 from fastapi import Depends, FastAPI, HTTPException, Request, status
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from jwt.algorithms import RSAAlgorithm
+from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
 from pydantic import BaseModel
 
 from cfa.config import database_settings, identity_settings
 from cfa.db import Pool, open_pool
 from cfa.identity.tokens import ACCESS_TOKEN_TYPE, TOKEN_EXCHANGE_GRANT, UserClaims
 from cfa.logging import configure_logging
+from cfa.telemetry import configure_tracing
 
 USER_TOKEN_TTL_S = 30 * 60
 DELEGATED_TOKEN_TTL_S = 5 * 60
@@ -99,6 +101,8 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
 
 app = FastAPI(title="Mock IdP (STUB)", lifespan=lifespan, docs_url=None, redoc_url=None)
+configure_tracing("cfa-idp")
+FastAPIInstrumentor.instrument_app(app, excluded_urls="healthz", exclude_spans=["receive", "send"])
 _basic = HTTPBasic()
 
 

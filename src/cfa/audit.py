@@ -1,8 +1,12 @@
-"""Append-only audit and lineage log.
+"""Append-only, tamper-evident audit and lineage log.
 
 One row per action (route decision, model call, tool call, access decision,
-final answer), all sharing a ``trace_id``. Together they let a third party
+final answer), all sharing a ``trace_id`` (the OpenTelemetry trace id) and each
+carrying the ``span_id`` that produced it. Together they let a third party
 reconstruct what the agent saw, which model answered and who was accountable.
+
+The database chains every row to the previous one (``prev_hash`` -> ``hash``,
+migration 0004); ``verify_chain`` recomputes that chain independently.
 """
 
 import hashlib
@@ -15,6 +19,7 @@ from psycopg.types.json import Jsonb
 from pydantic import BaseModel, Field
 
 from cfa.db import Pool
+from cfa.telemetry import span_id_hex
 
 
 class Action(StrEnum):
@@ -27,6 +32,7 @@ class Action(StrEnum):
 
 class AuditEvent(BaseModel):
     trace_id: str
+    span_id: str | None = None
     component: str
     action: Action
     name: str | None = None
@@ -49,6 +55,9 @@ class AuditEvent(BaseModel):
 class StoredAuditEvent(AuditEvent):
     event_id: str
     ts: datetime
+    seq: int
+    prev_hash: str
+    hash: str
 
 
 def content_hash(value: Any) -> str:
@@ -63,8 +72,8 @@ _INSERT = (
     f"VALUES ({', '.join(['%s'] * len(_COLUMNS))})"
 )
 _SELECT_TRACE = (
-    f"SELECT event_id::text AS event_id, ts, {', '.join(_COLUMNS)} "  # noqa: S608 - static column names
-    "FROM audit.events WHERE trace_id = %s ORDER BY ts"
+    f"SELECT event_id::text AS event_id, ts, seq, prev_hash, hash, {', '.join(_COLUMNS)} "  # noqa: S608 - static
+    "FROM audit.events WHERE trace_id = %s ORDER BY seq"
 )
 
 
@@ -74,7 +83,9 @@ class AuditLog:
 
     async def record(self, event: AuditEvent) -> None:
         """Persist one event. Failures propagate: an action that cannot be audited
-        must not silently proceed."""
+        must not silently proceed. The database assigns seq, ts and the hash link."""
+        if event.span_id is None:
+            event = event.model_copy(update={"span_id": span_id_hex()})
         values = [
             Jsonb(value) if isinstance(value, dict) else value
             for value in (getattr(event, column) for column in _COLUMNS)

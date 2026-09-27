@@ -62,4 +62,13 @@ MUTANTS: tuple[Mutant, ...] = (
             )
         ),
     ),
+    Mutant(
+        "M5",
+        "reasoning-on-fast-path",
+        "Gateway alias assistant-fast re-pointed to the reasoning deployment ('use the smarter model everywhere').",
+        "G4",
+        AgentConfig(
+            alias_overrides=MappingProxyType({ModelAlias.FAST.value: ModelAlias.REASONING.value}),
+        ),
+    ),
 )

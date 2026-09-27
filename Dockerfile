@@ -27,5 +27,8 @@ CMD ["uvicorn", "cfa.api.app:app", "--host", "0.0.0.0", "--port", "8000"]
 FROM base AS dev
 RUN uv sync --frozen
 COPY tests ./tests
+# Gateway profiles + model catalog: unit-tested by tests/unit/test_gateway_admin.py.
+COPY gateway/catalog.yaml ./gateway/
+COPY gateway/profiles ./gateway/profiles
 USER app
 ENV HOME=/tmp RUFF_CACHE_DIR=/tmp/ruff MYPY_CACHE_DIR=/tmp/mypy

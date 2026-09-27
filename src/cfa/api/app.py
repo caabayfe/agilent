@@ -2,7 +2,8 @@
 
 The browser only ever talks to this service. It validates the user's token, runs
 the agent through the shared ``AssistantService``, and exposes read-only views of
-the audit trail, the gateway configuration and the latest eval results.
+the audit trail, the gateway configuration and the latest eval results, plus a
+local-demo model selector that re-points the gateway aliases (``cfa.gateway_admin``).
 """
 
 import json
@@ -22,17 +23,20 @@ import openai
 import yaml
 from fastapi import Depends, FastAPI, HTTPException, Request, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
-from langgraph.checkpoint.memory import InMemorySaver
+from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
+from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
 from pydantic import BaseModel, Field
 
+from cfa.agent.resilience import CircuitOpenError
 from cfa.agent.service import AssistantService, build_service
 from cfa.agent.skills_client import SkillClient
 from cfa.audit import AuditLog
 from cfa.config import agent_settings, database_settings, gateway_info_settings, identity_settings
-from cfa.db import open_pool
+from cfa.db import checkpoint_conninfo_kwargs, open_pool
 from cfa.identity.client import IdpClient
 from cfa.identity.tokens import TokenValidator, UserClaims
 from cfa.logging import configure_logging
+from cfa.telemetry import configure_tracing
 from evals.promotion import current_bindings, gateway_profile
 
 log = logging.getLogger(__name__)
@@ -44,6 +48,15 @@ class LoginRequest(BaseModel):
     username: str = Field(min_length=1, max_length=32, pattern=r"^[a-z]+$")
 
 
+class GatewaySelection(BaseModel):
+    """Either a named profile, or an alias -> catalog model id mapping."""
+
+    profile: str | None = Field(default=None, max_length=64, pattern=r"^[a-z0-9-]+$")
+    selection: dict[str, Annotated[str, Field(max_length=64, pattern=r"^[A-Za-z0-9._-]+$")]] | None = Field(
+        default=None, max_length=8
+    )
+
+
 class ChatRequest(BaseModel):
     message: str = Field(min_length=1, max_length=2000)
     thread_id: str = Field(min_length=1, max_length=64, pattern=_THREAD.pattern)
@@ -53,11 +66,19 @@ class ChatRequest(BaseModel):
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     configure_logging()
     identity = identity_settings()
-    async with open_pool(database_settings().database_url.get_secret_value()) as pool:
+    dsn = database_settings().database_url.get_secret_value()
+    async with (
+        open_pool(dsn) as pool,
+        # Conversation memory: LangGraph's standard Postgres checkpointer, same database,
+        # own schema. Tables are created by the migrate job, never by the app.
+        open_pool(dsn, **checkpoint_conninfo_kwargs()) as checkpoints,
+    ):
         audit = AuditLog(pool)
-        # Simplification: in-memory conversation memory. Production: PostgresSaver.
         app.state.service = build_service(
-            settings=agent_settings(), identity=identity, audit=audit, checkpointer=InMemorySaver()
+            settings=agent_settings(),
+            identity=identity,
+            audit=audit,
+            checkpointer=AsyncPostgresSaver(checkpoints),
         )
         app.state.audit = audit
         app.state.idp = IdpClient(
@@ -69,6 +90,8 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
 
 app = FastAPI(title="Customer Facing Assistant BFF", lifespan=lifespan, docs_url=None, redoc_url=None)
+configure_tracing("cfa-bff")
+FastAPIInstrumentor.instrument_app(app, excluded_urls="healthz", exclude_spans=["receive", "send"])
 
 
 async def current_user(
@@ -170,7 +193,7 @@ async def skills(request: Request, user: User) -> dict[str, Any]:
     client: SkillClient = request.app.state.skills
     try:
         return await client.catalog(delegated, uuid.uuid4().hex)
-    except (httpx.HTTPError, OSError, ExceptionGroup) as exc:
+    except (httpx.HTTPError, OSError, TimeoutError, ExceptionGroup, CircuitOpenError) as exc:
         log.warning("skill catalogue unavailable: %s", type(exc).__name__)
         raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, "Skill server unavailable.") from exc
 
@@ -228,7 +251,56 @@ async def gateway() -> dict[str, Any]:
         for entry in config.get("model_list", []):
             aliases.setdefault(entry["model_name"], []).append(_alias_entry(entry.get("litellm_params", {})))
     fallbacks = config.get("router_settings", {}).get("fallbacks", [])
-    return {"profile": gateway_profile(directory), "aliases": aliases, "fallbacks": fallbacks}
+    return {
+        "profile": gateway_profile(directory),
+        "aliases": aliases,
+        "fallbacks": fallbacks,
+        "admin_enabled": gateway_info_settings().gateway_admin_enabled,
+    }
+
+
+async def _gateway_admin(method: str, path: str, body: dict[str, Any] | None = None) -> dict[str, Any]:
+    """Call the gateway admin (cfa.gateway_admin) inside the LiteLLM container."""
+    settings = gateway_info_settings()
+    if not settings.gateway_admin_enabled:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "The model selector is disabled.")
+    headers = {"authorization": f"Bearer {agent_settings().gateway_api_key.get_secret_value()}"}
+    try:
+        # A change restarts the gateway, which can take a while on a cold image.
+        async with httpx.AsyncClient(timeout=httpx.Timeout(200.0, connect=3.0)) as client:
+            response = await client.request(method, settings.gateway_admin_url + path, headers=headers, json=body)
+    except httpx.HTTPError as exc:
+        log.warning("gateway admin unavailable: %s", type(exc).__name__)
+        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, "The gateway admin is unavailable.") from exc
+    try:
+        data: dict[str, Any] = response.json()
+    except ValueError:
+        data = {}
+    if response.status_code in (status.HTTP_400_BAD_REQUEST, status.HTTP_409_CONFLICT):
+        raise HTTPException(response.status_code, str(data.get("detail", "Rejected by the gateway.")))
+    if response.is_error:
+        raise HTTPException(status.HTTP_502_BAD_GATEWAY, str(data.get("detail", "The gateway change failed.")))
+    return data
+
+
+@app.get("/api/gateway/catalog")
+async def gateway_catalog(user: User) -> dict[str, Any]:
+    """Models an operator can put behind each alias, and which ones are usable."""
+    return await _gateway_admin("GET", "/catalog")
+
+
+@app.put("/api/gateway/selection")
+async def gateway_select(body: GatewaySelection, user: User) -> dict[str, Any]:
+    """Re-point the gateway aliases (a named profile or a per-alias selection).
+
+    Local demo control: the gateway restarts on the new config and the eval
+    certificate goes STALE unless the result is byte-identical to what was evaluated."""
+    _, claims = user
+    if (body.profile is None) == (body.selection is None):
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, "Send either 'profile' or 'selection'.")
+    request = {"profile": body.profile} if body.profile is not None else {"selection": body.selection}
+    log.warning("gateway change requested by %s: %s", claims.sub, request)
+    return await _gateway_admin("POST", "/select", request)
 
 
 @app.get("/api/evals/latest")
@@ -244,6 +316,13 @@ async def evals_latest() -> dict[str, Any]:
         changed = [k for k, v in baseline.get("bindings", {}).items() if now.get(k) != v]
         staleness = {"stale": bool(changed), "changed": changed, "current": now}
     return {"baseline": baseline, "mutants": mutants, "staleness": staleness}
+
+
+@app.get("/api/evals/matrix")
+async def evals_matrix() -> dict[str, Any]:
+    """Latest model matrix (``make eval-matrix``): the same suite on every model combination."""
+    matrix = _read_json(Path(gateway_info_settings().eval_reports_dir) / "matrix-latest.json")
+    return {"matrix": matrix}
 
 
 def _read_json(path: Path) -> dict[str, Any] | None:

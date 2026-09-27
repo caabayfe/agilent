@@ -2,7 +2,7 @@ from typing import Any
 
 import pytest
 
-from evals.gates import GateResult, p95, worst_class_p95
+from evals.gates import CaseResult, GateResult, RunRecord, latency_budgets, p95, score_gates, worst_class_vs_budget
 from evals.promotion import Decision, decide, derive_tier, load_policy, skill_manifests
 
 POLICY = load_policy()
@@ -56,9 +56,32 @@ def test_p95() -> None:
     assert p95([]) == 0
 
 
-def test_latency_gate_uses_the_slowest_model_class() -> None:
+def test_latency_gate_holds_each_model_class_to_its_own_budget() -> None:
     # A slow path that is 3% of traffic vanishes in a blended p95; per-class p95 keeps it visible.
-    runs = {"assistant-fast": [1000] * 97, "assistant-reasoning": [6000] * 3}
+    runs = {"assistant-fast": [1000] * 97, "assistant-reasoning": [9000] * 3}
     assert p95([v for values in runs.values() for v in values]) == 1000
-    assert worst_class_p95(runs) == ("assistant-reasoning", 6000)
-    assert worst_class_p95({}) == ("none", 0)
+    budget_of = latency_budgets({"assistant-fast": 6000, "assistant-reasoning": 12000})
+    assert worst_class_vs_budget(runs, budget_of) == ("assistant-reasoning", 9000, 12000)
+    # 5000 ms is closer to the fast budget than 9000 ms is to the reasoning one.
+    runs["assistant-fast"] = [5000] * 97
+    assert worst_class_vs_budget(runs, budget_of) == ("assistant-fast", 5000, 6000)
+    assert worst_class_vs_budget({}, budget_of) == ("none", 0, 6000)
+
+
+def test_unbudgeted_class_gets_the_strictest_budget_and_a_flat_number_still_works() -> None:
+    assert latency_budgets({"assistant-fast": 6000, "assistant-reasoning": 12000})("eval-weak") == 6000
+    assert latency_budgets(4000)("assistant-reasoning") == 4000
+
+
+def _latency_results(alias: str, ms: int) -> list[CaseResult]:
+    run = RunRecord("t", "a", alias, "m", [], ms, {})
+    return [CaseResult({"id": f"c-{alias}"}, [run] * 3)]
+
+
+def test_g4_passes_a_slow_reasoning_path_but_not_a_slow_lookup() -> None:
+    reasoning = score_gates(_latency_results("assistant-reasoning", 9000), POLICY)["G4"]
+    assert reasoning.passed
+    lookup = score_gates(_latency_results("assistant-fast", 9000), POLICY)["G4"]
+    assert not lookup.passed
+    assert lookup.failing_cases == ["c-assistant-fast"]
+    assert "assistant-fast p95 9000ms vs 6000ms" in lookup.detail

@@ -1,5 +1,6 @@
-# Customer Facing Assistant PoC. Only the UI (5173) and the BFF (8000) are
-# published, and only on localhost; everything else lives on the private network.
+# Customer Facing Assistant PoC. Only the UI (5173), the BFF (8000) and the Jaeger
+# UI (16686) are published, and only on localhost; everything else lives on the
+# private network.
 name: cfa
 
 x-app: &app
@@ -10,11 +11,18 @@ x-app: &app
   tmpfs: [/tmp]
   security_opt: ["no-new-privileges:true"]
   cap_drop: [ALL]
+  depends_on: &after-migrate
+    migrate: {condition: service_completed_successfully}
+
+# OpenTelemetry: every Python service exports spans (OTLP/HTTP) to Jaeger.
+x-otel: &otel
+  OTEL_EXPORTER_OTLP_ENDPOINT: http://jaeger:4318
 
 x-skill-env: &skill-env
   IDP_URL: http://idp:8000
   IDP_ISSUER: http://idp:8000
   ALLOW_EVAL_MUTANTS: ${ALLOW_EVAL_MUTANTS:-false}
+  <<: *otel
 
 services:
   postgres:
@@ -24,18 +32,38 @@ services:
       POSTGRES_DB: cfa
       POSTGRES_USER: cfa_admin
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?run make init}
-      DB_PASSWORD_ORDERS: ${DB_PASSWORD_ORDERS:?run make init}
-      DB_PASSWORD_BILLING: ${DB_PASSWORD_BILLING:?run make init}
-      DB_PASSWORD_SERVICE: ${DB_PASSWORD_SERVICE:?run make init}
-      DB_PASSWORD_PLATFORM: ${DB_PASSWORD_PLATFORM:?run make init}
-      DB_PASSWORD_EVAL: ${DB_PASSWORD_EVAL:?run make init}
     volumes:
-      - ./db/init:/docker-entrypoint-initdb.d:ro
       - pgdata:/var/lib/postgresql/data
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U cfa_admin -d cfa"]
       interval: 3s
       retries: 20
+
+  # One-shot job: Alembic migrations + LangGraph checkpointer setup, as the DB owner.
+  # Every service waits for it; none of them has DDL rights.
+  migrate:
+    <<: *app
+    restart: "no"
+    command: ["python", "-m", "cfa.migrate"]
+    healthcheck: {disable: true}
+    environment:
+      MIGRATE_DATABASE_URL: postgresql://cfa_admin:${POSTGRES_PASSWORD}@postgres:5432/cfa
+      DB_PASSWORD_ORDERS: ${DB_PASSWORD_ORDERS:?run make init}
+      DB_PASSWORD_BILLING: ${DB_PASSWORD_BILLING:?run make init}
+      DB_PASSWORD_SERVICE: ${DB_PASSWORD_SERVICE:?run make init}
+      DB_PASSWORD_PLATFORM: ${DB_PASSWORD_PLATFORM:?run make init}
+      DB_PASSWORD_EVAL: ${DB_PASSWORD_EVAL:?run make init}
+    depends_on: {postgres: {condition: service_healthy}}
+
+  # Trace backend (OTLP in, UI on localhost:16686). Production: Azure Monitor / App Insights.
+  jaeger:
+    image: jaegertracing/jaeger:2.21.0
+    restart: unless-stopped
+    read_only: true
+    tmpfs: [/tmp]
+    security_opt: ["no-new-privileges:true"]
+    cap_drop: [ALL]
+    ports: ["127.0.0.1:16686:16686"]
 
   idp:
     <<: *app
@@ -43,7 +71,8 @@ services:
     environment:
       DATABASE_URL: postgresql://cfa_platform:${DB_PASSWORD_PLATFORM}@postgres:5432/cfa
       AGENT_CLIENT_SECRET: ${AGENT_CLIENT_SECRET:?run make init}
-    depends_on: {postgres: {condition: service_healthy}}
+      OTEL_SERVICE_NAME: cfa-idp
+      <<: *otel
 
   # ONE MCP server for the customer-data bounded context, hosting three skills.
   # Each skill still logs in to Postgres as its own least-privilege role.
@@ -56,18 +85,23 @@ services:
       DATABASE_URL_BILLING: postgresql://cfa_billing:${DB_PASSWORD_BILLING}@postgres:5432/cfa
       DATABASE_URL_SERVICE: postgresql://cfa_service:${DB_PASSWORD_SERVICE}@postgres:5432/cfa
       DISABLED_SKILLS: ${DISABLED_SKILLS:-}  # kill switch: make disable-skill SKILL=billing
-    depends_on: {postgres: {condition: service_healthy}, idp: {condition: service_healthy}}
+      OTEL_SERVICE_NAME: cfa-mcp-customer
+    depends_on: {<<: *after-migrate, idp: {condition: service_healthy}}
 
   fake-llm:
     <<: *app
     command: ["uvicorn", "cfa.fake_llm.app:app", "--host", "0.0.0.0", "--port", "8000"]
     environment:
       FAKE_LLM_API_KEY: ${FAKE_LLM_API_KEY:?run make init}
+    depends_on: {}
 
   litellm:
     image: ghcr.io/berriai/litellm:main-stable
     restart: unless-stopped
-    command: ["--config", "/app/gateway/active.yaml", "--port", "4000"]
+    # The gateway admin supervises litellm and serves the UI model selector's
+    # internal API on :4001 (compose network only, master-key auth).
+    entrypoint: ["python3", "/opt/cfa/gateway_admin.py"]
+    command: ["--", "litellm", "--config", "/app/gateway/active.yaml", "--port", "4000"]
     environment:
       LITELLM_MASTER_KEY: ${LITELLM_MASTER_KEY:?run make init}
       FAKE_LLM_API_KEY: ${FAKE_LLM_API_KEY}
@@ -79,8 +113,14 @@ services:
       MODEL_REASONING_API_BASE: ${MODEL_REASONING_API_BASE:-}
       MODEL_REASONING_API_KEY: ${MODEL_REASONING_API_KEY:-}
       MODEL_REASONING_API_VERSION: ${MODEL_REASONING_API_VERSION:-}
+      MODEL_ALT_LITELLM_MODEL: ${MODEL_ALT_LITELLM_MODEL:-}
+      MODEL_ALT_API_BASE: ${MODEL_ALT_API_BASE:-}
+      MODEL_ALT_API_KEY: ${MODEL_ALT_API_KEY:-}
+      MODEL_ALT_API_VERSION: ${MODEL_ALT_API_VERSION:-}
     volumes:
-      - ./gateway:/app/gateway:ro
+      # Writable: the gateway admin rewrites active.yaml / active.profile.
+      - ./gateway:/app/gateway
+      - ./src/cfa/gateway_admin.py:/opt/cfa/gateway_admin.py:ro
     healthcheck:
       test: ["CMD-SHELL", "python3 -c \"import urllib.request; urllib.request.urlopen('http://127.0.0.1:4000/health/liveliness', timeout=2)\""]
       interval: 5s
@@ -94,11 +134,17 @@ services:
       AGENT_CLIENT_SECRET: ${AGENT_CLIENT_SECRET}
       GATEWAY_URL: http://litellm:4000/v1
       GATEWAY_API_KEY: ${LITELLM_MASTER_KEY}
+      GATEWAY_ADMIN_URL: http://litellm:4001
+      # Local demo only: lets a signed-in UI user re-point the model aliases.
+      GATEWAY_ADMIN_ENABLED: ${GATEWAY_ADMIN_ENABLED:-true}
+      OTEL_SERVICE_NAME: cfa-bff
+      <<: *otel
     volumes:
       - ./gateway:/app/gateway:ro
       - ./evals/reports:/app/evals/reports:ro
     ports: ["127.0.0.1:8000:8000"]
     depends_on:
+      <<: *after-migrate
       idp: {condition: service_healthy}
       mcp-customer: {condition: service_healthy}
       litellm: {condition: service_healthy}
@@ -114,6 +160,9 @@ services:
       GATEWAY_URL: http://litellm:4000/v1
       GATEWAY_API_KEY: ${LITELLM_MASTER_KEY}
       EVAL_DATABASE_URL: postgresql://cfa_eval:${DB_PASSWORD_EVAL}@postgres:5432/cfa
+      GATEWAY_ADMIN_URL: http://litellm:4001   # evals.matrix switches models between runs
+      OTEL_SERVICE_NAME: cfa-evals
+      <<: *otel
     volumes:
       - ./gateway:/app/gateway:ro
       - ./evals/reports:/app/evals/reports

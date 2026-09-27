@@ -1,5 +1,21 @@
+"""Schemas and tables: one schema per data product, plus identity, audit and registry.
+
+Revision ID: 0001
+Revises: None
+"""
+
+from collections.abc import Sequence
+
+from cfa.migrations import run_sql
+
+revision: str = "0001"
+down_revision: str | None = None
+branch_labels: str | Sequence[str] | None = None
+depends_on: str | Sequence[str] | None = None
+
+SQL = """
 -- One schema per data product. Each MCP skill connects with a role that can only
--- read its own schema (see 03_roles.sh), so the data-product boundary is enforced
+-- read its own schema (see 0002_roles), so the data-product boundary is enforced
 -- by the database as well as by the skill's entitlement check.
 
 CREATE SCHEMA identity;
@@ -134,3 +150,12 @@ CREATE TABLE registry.assets (
     summary    JSONB NOT NULL,
     created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+"""
+
+
+def upgrade() -> None:
+    run_sql(SQL)
+
+
+def downgrade() -> None:
+    run_sql("DROP SCHEMA identity, orders, billing, service, audit, registry CASCADE")

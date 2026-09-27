@@ -162,8 +162,8 @@ export function EvalsPanel({ view, onRefresh }: { view: EvalsView | null; onRefr
             </table>
           </div>
           <p className="mt-1 text-[11px] text-slate-500">
-            Green = caught by the gate that exists for that failure. The baseline row shows G4 failing on
-            purpose.
+            Green = caught by the gate that exists for that failure. Each gate fails on purpose against its
+            own regression; M5 (reasoning model on the fast path) is the one for G4.
           </p>
         </section>
       )}

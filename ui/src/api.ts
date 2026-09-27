@@ -2,7 +2,10 @@ import type {
   AuditEvent,
   ChatAnswer,
   EvalsView,
+  GatewayCatalog,
+  GatewayChange,
   GatewayInfo,
+  ModelMatrix,
   Persona,
   Session,
   SkillCatalog,
@@ -56,5 +59,9 @@ export const api = {
     request<AuditEvent[]>(`/api/audit/${encodeURIComponent(traceId)}`, {}, token),
   skills: (token: string) => request<SkillCatalog>("/api/skills", {}, token),
   gateway: () => request<GatewayInfo>("/api/gateway"),
+  gatewayCatalog: (token: string) => request<GatewayCatalog>("/api/gateway/catalog", {}, token),
+  selectModels: (token: string, change: GatewayChange) =>
+    request<GatewayCatalog>("/api/gateway/selection", { method: "PUT", body: JSON.stringify(change) }, token),
   evals: () => request<EvalsView>("/api/evals/latest"),
+  matrix: () => request<{ matrix: ModelMatrix | null }>("/api/evals/matrix"),
 };

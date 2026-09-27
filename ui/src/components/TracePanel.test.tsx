@@ -7,7 +7,11 @@ function event(overrides: Partial<AuditEvent>): AuditEvent {
   return {
     event_id: crypto.randomUUID(),
     ts: "2026-09-26T10:00:00Z",
+    seq: 7,
+    prev_hash: "sha256:" + "a".repeat(64),
+    hash: "sha256:" + "b".repeat(64),
     trace_id: "t1",
+    span_id: null,
     component: "customer-assistant",
     action: "tool_call",
     name: null,
@@ -68,6 +72,25 @@ describe("TracePanel", () => {
     expect(
       screen.getByText(/assistant-reasoning answered by openai\/fake-fast \(failover\)/),
     ).toBeInTheDocument();
+  });
+
+  it("links the trace and each audit event to its OpenTelemetry span", () => {
+    render(
+      <TracePanel
+        traceId="0af7651916cd43dd8448eb211c80319c"
+        error={null}
+        events={[event({ action: "answer", span_id: "b7ad6b7169203331" })]}
+      />,
+    );
+    expect(screen.getByRole("link", { name: /Open spans in Jaeger/ })).toHaveAttribute(
+      "href",
+      "http://localhost:16686/trace/0af7651916cd43dd8448eb211c80319c",
+    );
+    expect(screen.getByRole("link", { name: /b7ad6b7169203331/ })).toHaveAttribute(
+      "href",
+      "http://localhost:16686/trace/0af7651916cd43dd8448eb211c80319c?uiFind=b7ad6b7169203331",
+    );
+    expect(screen.getByText(/#7 · sha256:bbbbbbbbbbbb/)).toBeInTheDocument();
   });
 
   it("renders model output as text, not HTML", () => {

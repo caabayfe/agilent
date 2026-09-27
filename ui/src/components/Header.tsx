@@ -1,14 +1,19 @@
+import { useState } from "react";
+
 import type { GatewayInfo, Persona, Session } from "../types";
 import { Badge } from "./Badge";
+import { ModelSelector } from "./ModelSelector";
 
 interface Props {
   personas: Persona[];
   session: Session | null;
   gateway: GatewayInfo | null;
   onSwitch: (username: string) => void;
+  onGatewayChanged: () => void;
+  onOpenMatrix: () => void;
 }
 
-export function Header({ personas, session, gateway, onSwitch }: Props) {
+export function Header({ personas, session, gateway, onSwitch, onGatewayChanged, onOpenMatrix }: Props) {
   return (
     <header className="flex flex-wrap items-center gap-4 border-b border-slate-200 bg-white px-5 py-3">
       <div className="flex items-center gap-2.5">
@@ -19,7 +24,16 @@ export function Header({ personas, session, gateway, onSwitch }: Props) {
         </div>
       </div>
 
-      <GatewayBadge gateway={gateway} />
+      <GatewayBadge gateway={gateway} token={session?.token ?? null} onChanged={onGatewayChanged} />
+
+      <button
+        type="button"
+        onClick={onOpenMatrix}
+        className="rounded-md border border-slate-300 bg-white px-2.5 py-1 text-xs font-medium text-slate-700 hover:bg-slate-50"
+        title="Same eval suite on every model combination"
+      >
+        Model matrix
+      </button>
 
       <div className="ml-auto flex items-center gap-3">
         {session && (
@@ -51,17 +65,27 @@ export function Header({ personas, session, gateway, onSwitch }: Props) {
   );
 }
 
-function GatewayBadge({ gateway }: { gateway: GatewayInfo | null }) {
+function GatewayBadge({
+  gateway,
+  token,
+  onChanged,
+}: {
+  gateway: GatewayInfo | null;
+  token: string | null;
+  onChanged: () => void;
+}) {
+  const [open, setOpen] = useState(false);
   if (!gateway) return null;
   const aliases = Object.entries(gateway.aliases).filter(([alias]) => alias.startsWith("assistant-"));
   const tone = gateway.profile.includes("broken")
     ? "red"
-    : gateway.profile.includes("swapped")
+    : gateway.profile.includes("swapped") || gateway.profile === "custom"
       ? "amber"
       : "indigo";
+  const canManage = Boolean(gateway.admin_enabled && token);
   return (
     <div
-      className="flex flex-wrap items-center gap-2 rounded-lg border border-slate-200 bg-slate-50 px-3 py-1.5"
+      className="relative flex flex-wrap items-center gap-2 rounded-lg border border-slate-200 bg-slate-50 px-3 py-1.5"
       title="Model gateway: aliases the agent calls, and the deployment behind each one"
     >
       <span className="text-[11px] font-semibold tracking-wide text-slate-500 uppercase">Gateway</span>
@@ -72,6 +96,27 @@ function GatewayBadge({ gateway }: { gateway: GatewayInfo | null }) {
           {deployments.map((d) => d.model.replace("os.environ/", "$")).join(", ")}
         </span>
       ))}
+      {canManage && (
+        <button
+          type="button"
+          aria-expanded={open}
+          onClick={() => {
+            setOpen((o) => !o);
+          }}
+          className="rounded-md border border-slate-300 bg-white px-2 py-0.5 text-xs font-medium text-slate-700 hover:bg-slate-100"
+        >
+          Change models ▾
+        </button>
+      )}
+      {canManage && open && token && (
+        <ModelSelector
+          token={token}
+          onChanged={onChanged}
+          onClose={() => {
+            setOpen(false);
+          }}
+        />
+      )}
     </div>
   );
 }

@@ -14,6 +14,11 @@ if [[ "$profile" == live* ]]; then
              MODEL_REASONING_LITELLM_MODEL MODEL_REASONING_API_BASE MODEL_REASONING_API_KEY; do
     [[ -n "$(printenv "$var" || true)" ]] || { echo "missing $var in .env - fill in the model credentials first"; exit 1; }
   done
+  if [[ "$profile" == live-alt* ]]; then
+    for var in MODEL_ALT_LITELLM_MODEL MODEL_ALT_API_BASE MODEL_ALT_API_KEY; do
+      [[ -n "$(printenv "$var" || true)" ]] || { echo "missing $var in .env - live-alt needs a second-vendor deployment"; exit 1; }
+    done
+  fi
 fi
 
 cp "$src" gateway/active.yaml

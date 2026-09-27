@@ -33,8 +33,11 @@ from mcp.server.auth.settings import AuthSettings
 from mcp.server.fastmcp import Context, FastMCP
 from mcp.server.fastmcp.exceptions import ToolError
 from mcp.server.transport_security import TransportSecuritySettings
+from opentelemetry import propagate, trace
+from opentelemetry.instrumentation.asgi import OpenTelemetryMiddleware
 from pydantic import AnyHttpUrl, BaseModel, Field, ValidationError
 from starlette.applications import Starlette
+from starlette.middleware import Middleware
 from starlette.requests import Request
 from starlette.responses import JSONResponse
 from starlette.routing import Mount, Route
@@ -46,11 +49,12 @@ from cfa.identity.tokens import DelegatedClaims, TokenValidator
 from cfa.logging import configure_logging
 from cfa.policy import AccessDecision, DataProduct, DenyReason, Principal, authorize
 from cfa.skills import SKILL_SERVER, skill_component
+from cfa.telemetry import configure_tracing, remote_trace_id, set_attributes, tracer
 
 log = logging.getLogger(__name__)
 
 EVAL_MUTANT_HEADER = "x-eval-mutant"
-TRACE_HEADER = "x-trace-id"
+TRACE_HEADER = "x-trace-id"  # fallback correlation id for clients without W3C trace context
 _TRACE_ID = re.compile(r"^[A-Za-z0-9-]{8,64}$")
 RATE_LIMIT_PER_MINUTE = 60
 CATALOG_URI = "skills://catalog"
@@ -173,14 +177,43 @@ class Boundary:
         """Authorise, fetch, check tenancy, audit, and return the result.
 
         The tenant key always comes from the verified token, never from tool
-        arguments chosen by the model.
+        arguments chosen by the model. Runs inside its own span, a child of the
+        agent's ``execute_tool`` span via the propagated W3C trace context.
         """
+        attributes = {
+            "cfa.skill": self.manifest.name,
+            "gen_ai.tool.name": tool,
+            "cfa.risk_tier": self.manifest.risk_tier,
+        }
+        parent = propagate.extract(dict(_headers(ctx)))  # explicit: tool calls may run outside the request task
+        with tracer().start_as_current_span(f"{self.manifest.component} {tool}", context=parent, attributes=attributes):
+            return await self._guard(ctx, tool, args, fetch, owner_of=owner_of, not_found=not_found)
+
+    async def _guard[T](
+        self,
+        ctx: Context[Any, Any, Any],
+        tool: str,
+        args: dict[str, Any],
+        fetch: Callable[[Principal, Pool], Awaitable[T | None]],
+        *,
+        owner_of: Callable[[T], str] | None,
+        not_found: str,
+    ) -> T:
         principal = _principal()
         trace_id, mutant = _request_meta(ctx)
         audit = AuditLog(self.pool)
 
         async def record(decision: AccessDecision, output: Any = None, note: str | None = None) -> None:
             snapshot = _jsonable(output)
+            set_attributes(
+                trace.get_current_span(),
+                {
+                    "cfa.decision": "allow" if decision.allowed else "deny",
+                    "cfa.reason": note or decision.reason,
+                    "cfa.policy_version": decision.policy_version,
+                    "enduser.id": principal.user,
+                },
+            )
             await audit.record(
                 AuditEvent(
                     trace_id=trace_id,
@@ -253,10 +286,15 @@ def _principal() -> Principal:
     )
 
 
-def _request_meta(ctx: Context[Any, Any, Any]) -> tuple[str, str | None]:
+def _headers(ctx: Context[Any, Any, Any]) -> Mapping[str, str]:
     request = ctx.request_context.request
-    headers = request.headers if isinstance(request, Request) else {}
-    trace_id = headers.get(TRACE_HEADER, "")
+    return request.headers if isinstance(request, Request) else {}
+
+
+def _request_meta(ctx: Context[Any, Any, Any]) -> tuple[str, str | None]:
+    headers = _headers(ctx)
+    # W3C traceparent first (the audit trace_id is the OTel trace id), then the fallback header.
+    trace_id = remote_trace_id(headers) or headers.get(TRACE_HEADER, "")
     if not _TRACE_ID.match(trace_id):
         trace_id = uuid.uuid4().hex
     return trace_id, headers.get(EVAL_MUTANT_HEADER)
@@ -344,6 +382,8 @@ def create_server(modules: Sequence[SkillModule], instructions: str) -> tuple[Fa
 
 
 def create_app(mcp: FastMCP, boundaries: Mapping[str, Boundary]) -> Starlette:
+    configure_tracing(SKILL_SERVER)
+
     @asynccontextmanager
     async def lifespan(_: Starlette) -> AsyncIterator[None]:
         configure_logging()
@@ -369,4 +409,6 @@ def create_app(mcp: FastMCP, boundaries: Mapping[str, Boundary]) -> Starlette:
     return Starlette(
         routes=[Route("/healthz", healthz), Mount("/", app=mcp.streamable_http_app())],
         lifespan=lifespan,
+        # Server span per request, continuing the caller's W3C trace context.
+        middleware=[Middleware(OpenTelemetryMiddleware, excluded_urls="healthz", exclude_spans=["receive", "send"])],
     )

@@ -16,11 +16,13 @@ from langgraph.types import Checkpointer
 from cfa.agent.context import AGENT_ID, RequestContext
 from cfa.agent.graph import AgentConfig, build_graph
 from cfa.agent.middleware import AssistantState, model_metadata
+from cfa.agent.resilience import Resilience, RetryPolicy
 from cfa.agent.skills_client import SkillClient
 from cfa.audit import Action, AuditEvent, AuditLog, content_hash
 from cfa.config import AgentSettings, IdentitySettings
 from cfa.identity.client import IdpClient
 from cfa.identity.tokens import UserClaims
+from cfa.telemetry import agent_span, set_attributes, trace_id_hex
 
 RECURSION_LIMIT = 16
 
@@ -55,44 +57,55 @@ class AssistantService:
         thread_id: str,
         eval_mutant: str | None = None,
     ) -> AskResult:
-        trace_id = uuid.uuid4().hex
-        started = time.perf_counter()
-        # The agent trades the user's token for a delegated token for the skill server.
-        skill_token = await self._idp.exchange_for_skills(user_token)
-        context = RequestContext(
-            trace_id=trace_id,
-            user=user.sub,
-            customer_id=user.customer_id,
-            agent=AGENT_ID,
-            skill_token=skill_token,
-            eval_mutant=eval_mutant,
-        )
-        state = await self._graph.ainvoke(
-            {"messages": [HumanMessage(question)]},
-            config={"configurable": {"thread_id": thread_id}, "recursion_limit": RECURSION_LIMIT},
-            context=context,
-        )
-        latency_ms = int((time.perf_counter() - started) * 1000)
-        final = next((m for m in reversed(state["messages"]) if isinstance(m, AIMessage)), None)
-        answer = final.text if final else ""
-        resolved, provider = model_metadata(final) if final else (None, None)
-        await self._audit.record(
-            AuditEvent(
+        with agent_span(AGENT_ID, thread_id) as span:
+            # One id end to end: the audit trace_id is the W3C / OpenTelemetry trace id.
+            trace_id = trace_id_hex(span) or uuid.uuid4().hex
+            started = time.perf_counter()
+            # The agent trades the user's token for a delegated token for the skill server.
+            skill_token = await self._idp.exchange_for_skills(user_token)
+            context = RequestContext(
                 trace_id=trace_id,
-                component=AGENT_ID,
-                action=Action.ANSWER,
-                actor_user=user.sub,
-                actor_agent=AGENT_ID,
-                decision="ok",
-                model_alias=state.get("model_alias"),
-                model_resolved=resolved,
-                provider=provider,
-                input={"question": question, "thread_id": thread_id},
-                output={"answer": answer},
-                output_hash=content_hash(answer),
-                latency_ms=latency_ms,
+                user=user.sub,
+                customer_id=user.customer_id,
+                agent=AGENT_ID,
+                skill_token=skill_token,
+                eval_mutant=eval_mutant,
             )
-        )
+            state = await self._graph.ainvoke(
+                {"messages": [HumanMessage(question)]},
+                config={"configurable": {"thread_id": thread_id}, "recursion_limit": RECURSION_LIMIT},
+                context=context,
+            )
+            latency_ms = int((time.perf_counter() - started) * 1000)
+            final = next((m for m in reversed(state["messages"]) if isinstance(m, AIMessage)), None)
+            answer = final.text if final else ""
+            resolved, provider = model_metadata(final) if final else (None, None)
+            await self._audit.record(
+                AuditEvent(
+                    trace_id=trace_id,
+                    component=AGENT_ID,
+                    action=Action.ANSWER,
+                    actor_user=user.sub,
+                    actor_agent=AGENT_ID,
+                    decision="ok",
+                    model_alias=state.get("model_alias"),
+                    model_resolved=resolved,
+                    provider=provider,
+                    input={"question": question, "thread_id": thread_id},
+                    output={"answer": answer},
+                    output_hash=content_hash(answer),
+                    latency_ms=latency_ms,
+                )
+            )
+            set_attributes(
+                span,
+                {
+                    "gen_ai.request.model": state.get("model_alias"),
+                    "gen_ai.response.model": resolved,
+                    "cfa.intent": state.get("intent"),
+                    "enduser.id": user.sub,
+                },
+            )
         return AskResult(
             trace_id=trace_id,
             answer=answer,
@@ -112,7 +125,13 @@ def build_service(
     checkpointer: Checkpointer | None = None,
 ) -> AssistantService:
     """Single composition root shared by the BFF and the eval harness."""
-    skills = SkillClient(settings.skill_server_url)
+    resilience = Resilience(
+        retry=RetryPolicy(attempts=settings.skill_retry_attempts),
+        attempt_timeout_s=settings.skill_attempt_timeout_s,
+        failure_threshold=settings.skill_breaker_threshold,
+        reset_after_s=settings.skill_breaker_reset_s,
+    )
+    skills = SkillClient(settings.skill_server_url, resilience)
     graph = build_graph(settings=settings, audit=audit, skills=skills, config=config, checkpointer=checkpointer)
     idp = IdpClient(identity.idp_url, identity.agent_client_id, identity.agent_client_secret.get_secret_value())
     return AssistantService(graph, audit, idp)

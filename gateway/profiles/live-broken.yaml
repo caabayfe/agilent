@@ -23,6 +23,9 @@ model_list:
 router_settings:
   # Failover is a gateway concern, not an agent concern.
   fallbacks: [{"assistant-reasoning": ["assistant-fast"]}]
+  # A provider's safety refusal is a decision, not an outage: never fail it over to a
+  # deployment with a weaker content filter. (Without this, LiteLLM falls back to `fallbacks`.)
+  content_policy_fallbacks: [{"assistant-reasoning": []}, {"assistant-fast": []}]
   num_retries: 0
 
 litellm_settings:

@@ -1,3 +1,19 @@
+"""Synthetic demo data (two tenants, three personas, deliberate eval traps).
+
+Revision ID: 0003
+Revises: 0002
+"""
+
+from collections.abc import Sequence
+
+from cfa.migrations import run_sql
+
+revision: str = "0003"
+down_revision: str | None = "0002"
+branch_labels: str | Sequence[str] | None = None
+depends_on: str | Sequence[str] | None = None
+
+SQL = """
 -- Synthetic data only. Two tenants: ACME-001 (Acme Biosciences) and NOV-002 (NovaGen
 -- Diagnostics). Several rows are deliberate eval traps (see docs/evals.md):
 --   * SO-10231 is "partially_shipped" with one backordered line
@@ -77,3 +93,15 @@ INSERT INTO service.kb_articles (kb_id, title, applies_to, error_codes, body, es
      'LC-900: calibrate every 12 months using calibration kit CK-12. MS-450: calibrate every 6 months. '
      'Calibration can be performed by trained lab staff.',
      FALSE);
+"""
+
+
+def upgrade() -> None:
+    run_sql(SQL)
+
+
+def downgrade() -> None:
+    run_sql(
+        "TRUNCATE service.visits, service.kb_articles, service.instruments, billing.invoices, "
+        "orders.order_lines, orders.orders, identity.agents, identity.users, identity.customers"
+    )

@@ -19,6 +19,12 @@ class DatabaseSettings(_Base):
     database_url: SecretStr
 
 
+class MigrationSettings(_Base):
+    """Only the one-shot migrate job gets the database owner's credentials."""
+
+    migrate_database_url: SecretStr
+
+
 class IdentitySettings(_Base):
     """Where tokens come from and how the agent authenticates to the IdP."""
 
@@ -60,11 +66,19 @@ class AgentSettings(_Base):
     gateway_api_key: SecretStr
     gateway_timeout_s: float = 90.0
     skill_server_url: str = "http://mcp-customer:8000/mcp"
+    # MCP client resilience (see cfa.agent.resilience)
+    skill_attempt_timeout_s: float = 5.0
+    skill_retry_attempts: int = 3
+    skill_breaker_threshold: int = 3
+    skill_breaker_reset_s: float = 15.0
 
 
 class GatewayInfoSettings(_Base):
     gateway_config_dir: str = "/app/gateway"
     eval_reports_dir: str = "/app/evals/reports"
+    # UI model selector (cfa.gateway_admin). Off unless the local stack turns it on.
+    gateway_admin_url: str = "http://litellm:4001"
+    gateway_admin_enabled: bool = False
 
 
 @lru_cache

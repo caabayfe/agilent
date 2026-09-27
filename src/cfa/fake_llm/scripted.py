@@ -5,7 +5,7 @@ json_schema structured output) to exercise every seam of the system offline.
 Three personalities are exposed as models:
 
 * ``fake-fast``      - quick, accurate.
-* ``fake-reasoning`` - accurate but slow (makes the latency gate fail on purpose).
+* ``fake-reasoning`` - accurate but slow (on the fast path it makes the latency gate fail: mutant M5).
 * ``fake-weak``      - fast but subtly wrong (a "cheaper provider" for eval mutant M4).
 
 This is test infrastructure, not an agent: it never sees data it was not given.

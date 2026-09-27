@@ -8,6 +8,9 @@ interface Props {
   error: string | null;
 }
 
+/** Jaeger UI (OpenTelemetry traces). The audit trace id IS the W3C trace id. */
+export const TRACING_UI = "http://localhost:16686";
+
 const ACTION_LABEL: Record<AuditEvent["action"], string> = {
   route: "Route",
   model_call: "Model call",
@@ -54,8 +57,18 @@ export function TracePanel({ traceId, events, error }: Props) {
   return (
     <div className="space-y-3">
       <div className="rounded-lg border border-slate-200 bg-slate-50 p-3 text-xs text-slate-600">
-        <p>
-          <span className="font-medium text-slate-800">trace</span> <code>{traceId}</code>
+        <p className="flex flex-wrap items-center gap-x-2">
+          <span>
+            <span className="font-medium text-slate-800">trace</span> <code>{traceId}</code>
+          </span>
+          <a
+            className="ml-auto font-medium text-indigo-600 hover:underline"
+            href={`${TRACING_UI}/trace/${traceId}`}
+            target="_blank"
+            rel="noreferrer noopener"
+          >
+            Open spans in Jaeger ↗
+          </a>
         </p>
         <p>
           <span className="font-medium text-slate-800">user</span>{" "}
@@ -81,6 +94,21 @@ export function TracePanel({ traceId, events, error }: Props) {
                 <span className="basis-full text-slate-600">{summary(event)}</span>
               </summary>
               <dl className="mt-2 grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 text-[11px] text-slate-600">
+                {event.span_id && (
+                  <Row label="span">
+                    <a
+                      className="text-indigo-600 hover:underline"
+                      href={`${TRACING_UI}/trace/${traceId}?uiFind=${event.span_id}`}
+                      target="_blank"
+                      rel="noreferrer noopener"
+                    >
+                      {event.span_id} ↗
+                    </a>
+                  </Row>
+                )}
+                <Row label="chain">
+                  #{event.seq} · {event.hash.slice(0, 19)}… ← {event.prev_hash.slice(0, 19)}…
+                </Row>
                 {event.policy_version && <Row label="policy">{event.policy_version}</Row>}
                 {event.output_hash && <Row label="output hash">{event.output_hash.slice(0, 23)}…</Row>}
                 {event.tokens_in !== null && (

@@ -1,0 +1,101 @@
+# Models the UI model selector can put behind each gateway alias.
+#
+# The agent only ever calls the aliases; this file is the menu of deployments an
+# operator may map them to. `litellm_params` must match the profile entries exactly
+# (that is how a selection is recognised as a named profile, so the eval
+# certificate hash stays the same as `make gateway <profile>`).
+#
+# A model is offered only if every `os.environ/` reference it uses is set in the
+# gateway's environment (.env -> docker-compose.yml). No keys live in this file.
+base_profile: live          # router / fallback / safety settings are taken from here
+aliases: [assistant-fast, assistant-reasoning]
+
+models:
+  - id: env-fast
+    label: MODEL_FAST (.env)
+    vendor: Azure OpenAI
+    notes: The fast deployment configured in .env.
+    litellm_params:
+      model: os.environ/MODEL_FAST_LITELLM_MODEL
+      api_base: os.environ/MODEL_FAST_API_BASE
+      api_key: os.environ/MODEL_FAST_API_KEY
+      api_version: os.environ/MODEL_FAST_API_VERSION
+
+  - id: env-reasoning
+    label: MODEL_REASONING (.env)
+    vendor: Azure OpenAI
+    notes: The reasoning deployment configured in .env.
+    litellm_params:
+      model: os.environ/MODEL_REASONING_LITELLM_MODEL
+      api_base: os.environ/MODEL_REASONING_API_BASE
+      api_key: os.environ/MODEL_REASONING_API_KEY
+      api_version: os.environ/MODEL_REASONING_API_VERSION
+
+  - id: env-alt
+    label: MODEL_ALT (.env)
+    vendor: second vendor
+    notes: Optional cross-vendor deployment (e.g. DeepSeek, Llama, Mistral via Azure AI Foundry).
+    litellm_params:
+      model: os.environ/MODEL_ALT_LITELLM_MODEL
+      api_base: os.environ/MODEL_ALT_API_BASE
+      api_key: os.environ/MODEL_ALT_API_KEY
+
+  # Other deployments on the same Azure OpenAI resource as MODEL_REASONING_*.
+  - id: azure-gpt-4.1
+    label: gpt-4.1
+    vendor: Azure OpenAI
+    notes: Same resource and key as MODEL_REASONING.
+    litellm_params:
+      model: azure/gpt-4.1
+      api_base: os.environ/MODEL_REASONING_API_BASE
+      api_key: os.environ/MODEL_REASONING_API_KEY
+      api_version: os.environ/MODEL_REASONING_API_VERSION
+
+  - id: azure-gpt-4o
+    label: gpt-4o
+    vendor: Azure OpenAI
+    notes: Same resource and key as MODEL_REASONING.
+    litellm_params:
+      model: azure/gpt-4o
+      api_base: os.environ/MODEL_REASONING_API_BASE
+      api_key: os.environ/MODEL_REASONING_API_KEY
+      api_version: os.environ/MODEL_REASONING_API_VERSION
+
+  - id: azure-gpt-5
+    label: gpt-5
+    vendor: Azure OpenAI
+    notes: Same resource and key as MODEL_REASONING.
+    litellm_params:
+      model: azure/gpt-5
+      api_base: os.environ/MODEL_REASONING_API_BASE
+      api_key: os.environ/MODEL_REASONING_API_KEY
+      api_version: os.environ/MODEL_REASONING_API_VERSION
+
+  - id: azure-o4-mini
+    label: o4-mini
+    vendor: Azure OpenAI
+    notes: Same resource and key as MODEL_REASONING.
+    litellm_params:
+      model: azure/o4-mini
+      api_base: os.environ/MODEL_REASONING_API_BASE
+      api_key: os.environ/MODEL_REASONING_API_KEY
+      api_version: os.environ/MODEL_REASONING_API_VERSION
+
+  # Offline, deterministic scripted models (no credentials).
+  - id: fake-fast
+    label: fake-fast (scripted)
+    vendor: offline
+    notes: Deterministic scripted model used by the offline evals.
+    litellm_params:
+      model: openai/fake-fast
+      api_base: http://fake-llm:8000/v1
+      api_key: os.environ/FAKE_LLM_API_KEY
+
+  - id: fake-reasoning
+    label: fake-reasoning (scripted)
+    vendor: offline
+    notes: Deterministic scripted model used by the offline evals.
+    litellm_params:
+      model: openai/fake-reasoning
+      api_base: http://fake-llm:8000/v1
+      api_key: os.environ/FAKE_LLM_API_KEY

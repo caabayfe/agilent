@@ -4,6 +4,7 @@ import { api, ApiError } from "./api";
 import { Chat } from "./components/Chat";
 import { EvalsPanel } from "./components/EvalsPanel";
 import { Header } from "./components/Header";
+import { MatrixPage } from "./components/MatrixPage";
 import { SkillsPanel } from "./components/SkillsPanel";
 import { TracePanel } from "./components/TracePanel";
 import { classes, newId } from "./format";
@@ -43,6 +44,13 @@ export function App() {
   const [skills, setSkills] = useState<SkillCatalog | null>(null);
   const [skillsError, setSkillsError] = useState<string | null>(null);
   const [fatal, setFatal] = useState<string | null>(null);
+  const [page, setPage] = useState<"assistant" | "matrix">(() =>
+    window.location.hash === "#matrix" ? "matrix" : "assistant",
+  );
+  const showPage = useCallback((next: "assistant" | "matrix") => {
+    setPage(next);
+    window.history.replaceState(null, "", next === "matrix" ? "#matrix" : window.location.pathname);
+  }, []);
 
   const refreshGateway = useCallback(() => {
     api.gateway().then(setGateway, () => {
@@ -170,8 +178,22 @@ export function App() {
         onSwitch={(u) => {
           void signIn(u);
         }}
+        onGatewayChanged={() => {
+          refreshGateway();
+          refreshEvals();
+        }}
+        onOpenMatrix={() => {
+          showPage("matrix");
+        }}
       />
-      <main className="flex min-h-0 flex-1">
+      {page === "matrix" && (
+        <MatrixPage
+          onBack={() => {
+            showPage("assistant");
+          }}
+        />
+      )}
+      <main className={classes("flex min-h-0 flex-1", page === "matrix" && "hidden")}>
         <Chat
           messages={messages}
           suggestions={SUGGESTIONS[session?.user.sub ?? ""] ?? []}

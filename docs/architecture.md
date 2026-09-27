@@ -130,7 +130,7 @@ Service roles have `INSERT` only on `audit.events`. Only the platform role (BFF)
 
 ## Promotion registry (`registry.assets`)
 
-Each `make eval` inserts a decision record: `certified` / `blocked` / `harness_invalid`, the gate results, and the **bindings** (graph version, prompt hash, routing policy version, gateway config hash, skill manifests hash, dataset hash). The BFF recomputes the current bindings on every request. Any difference marks the certificate **stale**; for example, `make swap-provider` changes `gateway_config_hash`.
+Each `make eval` inserts a decision record: `certified` / `blocked` / `harness_invalid`, the gate results, and the **bindings** (graph version, agent code hash, prompt hash, routing policy version, gateway config hash, skill manifests hash, dataset hash). The BFF recomputes the current bindings on every request. Any difference marks the certificate **stale**; for example, `make swap-provider` changes `gateway_config_hash`.
 
 ## Code map
 
@@ -143,7 +143,9 @@ Each `make eval` inserts a decision record: `certified` / `blocked` / `harness_i
 | `src/cfa/skills/{orders,billing,service}/` | one MCP server per data product: `server.py`, `repository.py`, `models.py`, `manifest.yaml` |
 | `src/cfa/skills/runtime.py` | shared skill runtime: token verifier, `Boundary` (authorize + audit + rate limit + error hygiene), DNS-rebinding protection |
 | `src/cfa/fake_llm/` | deterministic OpenAI-compatible model used offline and in evals |
-| `gateway/profiles/` | gateway configs: `fake`, `live`, `*-swapped`, `*-broken` |
+| `gateway/profiles/` | gateway configs: `fake`, `live`, `*-swapped`, `*-broken`, `live-alt` (second vendor); `gateway/model-contracts.yaml` (per-model differences and where they are absorbed); `gateway/catalog.yaml` (models the UI selector can put behind each alias) |
+| `src/cfa/gateway_admin.py` | supervises LiteLLM in its container; internal API (`:4001`, master key) behind the UI model selector: compose/activate a config, restart, roll back |
 | `evals/` | cases, canaries, graders, gates, mutants, promotion policy, harness |
+| `evals/matrix.py` | model matrix: re-points the aliases via the gateway admin, runs `evals.run` once per combination in its own process, and summarises into `evals/reports/matrix-latest.*` (UI: Model matrix) |
 | `db/init/` | schema, seed data, least-privilege roles |
 | `ui/` | React SPA + nginx |

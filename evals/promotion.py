@@ -25,6 +25,7 @@ from evals.gates import GateResult
 
 EVALS_DIR = Path(__file__).parent
 SKILLS_DIR = Path(cfa.__file__).parent / "skills"
+AGENT_DIR = Path(cfa.__file__).parent / "agent"
 
 
 class Decision(StrEnum):
@@ -105,6 +106,7 @@ def current_bindings(gateway_dir: Path) -> dict[str, str]:
     return {
         "graph_version": cfa.__version__,
         "prompt_hash": _hash_files(sorted(PROMPTS_DIR.glob("*.md"))),
+        "agent_code_hash": _hash_files(sorted(AGENT_DIR.glob("*.py"))),
         "routing_policy": f"{ROUTING_POLICY_VERSION} ({hashlib.sha256(routing.encode()).hexdigest()[:8]})",
         "gateway_config_hash": _hash_files([gateway_dir / "active.yaml"]),
         "skill_manifests_hash": _hash_files(sorted(SKILLS_DIR.glob("*/manifest.yaml"))),
