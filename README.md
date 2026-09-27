@@ -144,6 +144,7 @@ More in [docs/use-cases.md](docs/use-cases.md).
 
 - [Use cases](docs/use-cases.md): personas, skills, sample questions and expected outcomes
 - [Architecture](docs/architecture.md): components, agent graph, identity flow, audit schema
+- [Target architecture](docs/target-architecture.md): the agent plane target state, and where the vendor-neutral seams sit
 - [Security](docs/security.md): threat model → controls → evidence
 - [Evals](docs/evals.md): gates, canaries, mutation runs, promotion
 - [Production mapping](docs/production-mapping.md): PoC → Azure → AWS
